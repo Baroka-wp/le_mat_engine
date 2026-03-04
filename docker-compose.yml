@@ -1,0 +1,11 @@
+services:
+  lemat:
+    build: .
+    image: lemat-platform
+    container_name: lemat
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist all project files on the host
+      - ./data/projects:/data/projects
+    restart: unless-stopped

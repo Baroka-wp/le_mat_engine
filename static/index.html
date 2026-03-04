@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Le Mat — Deployment Platform</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+</head>
+<body>
+
+  <!-- ── Sidebar ── -->
+  <aside id="sidebar">
+    <div id="brand">
+      <span class="brand-icon">♟</span>
+      <span class="brand-name">Le Mat</span>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span>Projets</span>
+        <button id="btn-new-project" title="Nouveau projet">+</button>
+      </div>
+      <ul id="project-list"></ul>
+    </div>
+
+    <div class="sidebar-section" id="filetree-section" style="display:none">
+      <div class="sidebar-header">
+        <span id="current-project-name">—</span>
+        <div class="sidebar-header-actions">
+          <button id="btn-new-file"   title="Nouveau fichier">📄</button>
+          <button id="btn-new-folder" title="Nouveau dossier">📁</button>
+          <button id="btn-upload"     title="Uploader">⬆</button>
+        </div>
+      </div>
+      <div id="file-tree"></div>
+    </div>
+
+    <input type="file" id="upload-input" multiple style="display:none" />
+  </aside>
+
+  <!-- ── Main ── -->
+  <main id="main">
+
+    <!-- Tabs + toolbar -->
+    <div id="topbar">
+      <div id="tabs-bar"></div>
+      <div id="run-toolbar">
+        <input id="custom-cmd" type="text" placeholder="commande custom…" spellcheck="false" />
+        <button id="btn-run"  title="Exécuter / Ouvrir (F5)">▶ Run</button>
+        <button id="btn-stop" title="Arrêter" disabled>■</button>
+        <button id="btn-clear-term" title="Effacer logs">🗑</button>
+        <button id="btn-toggle-term" title="Afficher/masquer logs">⬇ Logs</button>
+      </div>
+    </div>
+
+    <!-- Work area -->
+    <div id="work-area">
+      <div id="editor-container">
+        <div id="welcome">
+          <h1>♟ Le Mat</h1>
+          <p>Sélectionne un projet ou crée-en un nouveau.</p>
+          <div class="shortcuts">
+            <kbd>Ctrl+S</kbd> Sauvegarder + live reload &nbsp;|&nbsp;
+            <kbd>F5</kbd> Run / Ouvrir &nbsp;|&nbsp;
+            <kbd>Ctrl+W</kbd> Fermer l'onglet
+          </div>
+        </div>
+        <div id="monaco-container" style="width:100%;height:100%;display:none;"></div>
+      </div>
+
+      <div id="resize-handle"></div>
+
+      <!-- Logs panel -->
+      <div id="terminal-panel">
+        <div id="terminal-header">
+          <span>Logs</span>
+          <span id="term-status"></span>
+        </div>
+        <div id="terminal-output"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Modal ── -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal">
+      <div id="modal-title"></div>
+      <input id="modal-input" type="text" autocomplete="off" />
+      <div id="modal-actions">
+        <button id="modal-cancel">Annuler</button>
+        <button id="modal-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
