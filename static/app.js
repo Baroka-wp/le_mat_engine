@@ -137,6 +137,33 @@ async function openDeployModal() {
   document.getElementById('deploy-backdrop').classList.remove('hidden');
   document.getElementById('deploy-project-name').textContent = currentProject;
 
+  // Reset complet des champs avant de charger les données du projet
+  const customDomainInput = document.getElementById('custom-domain');
+  if (customDomainInput) customDomainInput.value = '';
+  const customDomainUrlInput = document.getElementById('custom-domain-url');
+  if (customDomainUrlInput) customDomainUrlInput.value = '';
+  const deployUrlEl = document.getElementById('deploy-url');
+  if (deployUrlEl) deployUrlEl.value = '';
+
+  // Reset sections visibilité
+  const notDeployed = document.getElementById('not-deployed');
+  const deployedSection = document.getElementById('deployed-section');
+  const domainNotConfigured = document.getElementById('domain-not-configured');
+  const domainConfigured = document.getElementById('domain-configured');
+  const dnsPending = document.getElementById('dns-pending');
+  const dnsVerified = document.getElementById('dns-verified');
+  if (notDeployed) notDeployed.style.display = 'block';
+  if (deployedSection) deployedSection.style.display = 'none';
+  if (domainNotConfigured) domainNotConfigured.style.display = 'block';
+  if (domainConfigured) domainConfigured.style.display = 'none';
+  if (dnsPending) dnsPending.style.display = 'none';
+  if (dnsVerified) dnsVerified.style.display = 'none';
+
+  // Reset onglets DNS
+  document.querySelectorAll('.dns-tab').forEach((t, i) => {
+    t.classList.toggle('active', i === 0);
+  });
+
   // Event listeners (rebind each time to avoid duplicates via onclick)
   document.getElementById('btn-deploy-close').onclick = closeDeployModal;
   document.getElementById('btn-deploy-cancel').onclick = closeDeployModal;
