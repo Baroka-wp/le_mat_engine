@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application ───────────────────────────────────────────────────────
 COPY main.py .
+COPY model_parser.py .
+COPY db_engine.py .
 COPY static/ static/
 
 RUN mkdir -p /data/projects

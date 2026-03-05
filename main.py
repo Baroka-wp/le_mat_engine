@@ -3,16 +3,29 @@ import json
 import os
 import shlex
 import shutil
+import smtplib
+import ssl as ssl_lib
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
-from typing import List
+from typing import Any, List, Optional
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 import aiofiles
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+import model_parser
+import db_engine
 
 BASE_DIR = Path("/data/projects")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -29,10 +42,10 @@ app.add_middleware(
 
 app.mount("/editor", StaticFiles(directory="/app/static", html=True), name="editor")
 
-# Registry of running processes  { run_id -> Process }
+# Registry of running processes
 active_processes: dict[str, asyncio.subprocess.Process] = {}
 
-# Live reload: project name → list of connected WebSockets
+# Live reload: project → list of WebSockets
 livereload_clients: dict[str, list[WebSocket]] = {}
 
 LANG_RUNNERS = {
@@ -43,30 +56,58 @@ LANG_RUNNERS = {
     "sh":  ["bash", "{file}"],
 }
 
-# Script injected into every served HTML page for live reload
-LIVERELOAD_SCRIPT = """<script>
-(function(){
+NON_EXECUTABLE = {"html", "htm", "css", "svg", "json", "xml", "md", "txt", "lemat"}
+
+# ── Inject script (live reload + SDK loader) ──────────────────────────────────
+
+INJECT_SCRIPT = """<script>
+(function(){{
   var proj = location.pathname.split('/')[2];
-  function connect(){
+  // Le Mat SDK
+  var sdk = document.createElement('script');
+  sdk.src = '/api/projects/' + proj + '/lemat-sdk.js';
+  document.head.appendChild(sdk);
+  // Live reload
+  function connect(){{
     var ws = new WebSocket('ws://' + location.host + '/api/projects/' + proj + '/livereload');
-    ws.onmessage = function(){ location.reload(); };
-    ws.onclose   = function(){ setTimeout(connect, 1500); };
-  }
+    ws.onmessage = function(){{ location.reload(); }};
+    ws.onclose   = function(){{ setTimeout(connect, 1500); }};
+  }}
   connect();
-})();
+}})();
 </script>"""
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+def inject_scripts(html: str) -> str:
+    tag = INJECT_SCRIPT
+    if "</body>" in html:
+        return html.replace("</body>", tag + "</body>", 1)
+    return html + tag
+
+
+# ── Project / file helpers ────────────────────────────────────────────────────
 
 def safe_path(project: str, filepath: str = "") -> Path:
     project_dir = BASE_DIR / project
     if filepath:
         resolved = (project_dir / filepath).resolve()
         if not str(resolved).startswith(str(project_dir.resolve())):
-            raise HTTPException(status_code=400, detail="Path traversal not allowed")
+            raise HTTPException(400, "Path traversal not allowed")
         return resolved
     return project_dir
+
+
+HIDDEN_SUFFIXES = {
+    ".db-shm", ".db-wal", ".DS_Store",
+    "smtp.json", "crons.json", "cron_logs.json",
+    "_lemat_init.py", "_lemat_init.js",
+}
+
+_smtp_executor = ThreadPoolExecutor(max_workers=4)
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+_scheduler = AsyncIOScheduler(timezone="UTC")
+CRON_LOG_MAX = 20
 
 
 def dir_tree(root: Path, rel: Path = None) -> dict:
@@ -74,6 +115,8 @@ def dir_tree(root: Path, rel: Path = None) -> dict:
         rel = root
     entries = []
     for item in sorted(root.iterdir(), key=lambda x: (x.is_file(), x.name)):
+        if any(item.name.endswith(s) for s in HIDDEN_SUFFIXES):
+            continue
         entry = {
             "name": item.name,
             "path": str(item.relative_to(rel)),
@@ -86,7 +129,6 @@ def dir_tree(root: Path, rel: Path = None) -> dict:
 
 
 async def broadcast_reload(project: str):
-    """Notify all live-reload clients for a project."""
     dead = []
     for ws in livereload_clients.get(project, []):
         try:
@@ -97,13 +139,721 @@ async def broadcast_reload(project: str):
         livereload_clients[project].remove(ws)
 
 
-def inject_livereload(html: str) -> str:
-    if "</body>" in html:
-        return html.replace("</body>", LIVERELOAD_SCRIPT + "</body>", 1)
-    return html + LIVERELOAD_SCRIPT
+# ── Schema / DB helpers ───────────────────────────────────────────────────────
+
+def find_schema_file(project_dir: Path) -> Optional[Path]:
+    """Return the first .lemat file found in the project."""
+    for f in sorted(project_dir.glob("*.lemat")):
+        return f
+    return None
 
 
-# ─── Live Reload WebSocket ────────────────────────────────────────────────────
+def load_schema(project_dir: Path) -> Optional[model_parser.SchemaDef]:
+    schema_file = find_schema_file(project_dir)
+    if not schema_file:
+        return None
+    return model_parser.parse(schema_file.read_text(errors="replace"))
+
+
+def find_db_file(project_dir: Path, schema: Optional[model_parser.SchemaDef] = None) -> Optional[Path]:
+    """Return the project database file."""
+    if schema:
+        candidate = project_dir / schema.database
+        if candidate.exists():
+            return candidate
+    for f in sorted(project_dir.glob("*.db")):
+        return f
+    return None
+
+
+def get_schema_and_db(project: str) -> tuple[Optional[model_parser.SchemaDef], Optional[Path]]:
+    project_dir = safe_path(project)
+    schema = load_schema(project_dir)
+    db_path = find_db_file(project_dir, schema)
+    return schema, db_path
+
+
+def resolve_table(schema: Optional[model_parser.SchemaDef], db_path: Optional[Path], table: str) -> str:
+    """Return the canonical table name (case-insensitive match)."""
+    if db_path and db_path.exists():
+        tables = db_engine.list_tables(db_path)
+        for t in tables:
+            if t.lower() == table.lower():
+                return t
+    if schema:
+        m = schema.get_model(table)
+        if m:
+            return m.name
+    raise HTTPException(404, f"Table '{table}' not found")
+
+
+# ── SDK generator ─────────────────────────────────────────────────────────────
+
+def generate_sdk(project: str, schema: model_parser.SchemaDef) -> str:
+    model_lines = []
+    for m in schema.models:
+        model_lines.append(f"  {m.name}: _model('{m.name}'),")
+
+    return f"""// Le Mat SDK — auto-generated for project "{project}"
+// Models: {', '.join(m.name for m in schema.models)}
+// Usage:  const users = await LeMat.User.all();
+//         const u = await LeMat.User.create({{ name: 'Alice' }});
+//         await LeMat.User.update(1, {{ name: 'Bob' }});
+//         await LeMat.User.delete(1);
+
+(function (w) {{
+  'use strict';
+  var BASE = '/api/projects/{project}/data';
+
+  function _req(method, path, body) {{
+    var opts = {{ method: method, headers: {{}} }};
+    if (body !== undefined) {{
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }}
+    return fetch(BASE + path, opts).then(function (r) {{
+      if (!r.ok) return r.json().then(function (e) {{ return Promise.reject(e); }});
+      return r.json();
+    }});
+  }}
+
+  function _model(name) {{
+    return {{
+      /** Fetch all rows. Optional params: {{ limit, offset, order_by, ...filters }} */
+      all: function (params) {{
+        var qs = params ? '?' + new URLSearchParams(params).toString() : '';
+        return _req('GET', '/' + name + qs);
+      }},
+      /** Fetch one row by primary key. */
+      find: function (id) {{ return _req('GET', '/' + name + '/' + id); }},
+      /** Create a new row. */
+      create: function (data) {{ return _req('POST', '/' + name, data); }},
+      /** Update a row by primary key. */
+      update: function (id, data) {{ return _req('PUT', '/' + name + '/' + id, data); }},
+      /** Delete a row by primary key. */
+      delete: function (id) {{ return _req('DELETE', '/' + name + '/' + id); }},
+    }};
+  }}
+
+  w.LeMat = {{
+{chr(10).join(model_lines)}
+    /** Send an email via the project SMTP config.
+     *  @param {{ to, subject, html, text, from_name, from_email }} opts
+     *  @returns Promise<{{ sent: true, recipients: string[] }}>
+     */
+    Mail: {{
+      send: function(opts) {{
+        return fetch('/api/projects/{project}/mail/send', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(opts),
+        }}).then(function(r) {{
+          if (!r.ok) return r.json().then(function(e) {{ return Promise.reject(e); }});
+          return r.json();
+        }});
+      }},
+    }},
+  }};
+}})(window);
+"""
+
+
+def generate_empty_sdk(project: str = "") -> str:
+    return f"""// Le Mat SDK — project "{project}"
+(function(w) {{
+  'use strict';
+  w.LeMat = {{
+    Mail: {{
+      send: function(opts) {{
+        return fetch('/api/projects/{project}/mail/send', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(opts),
+        }}).then(function(r) {{
+          if (!r.ok) return r.json().then(function(e) {{ return Promise.reject(e); }});
+          return r.json();
+        }});
+      }},
+    }},
+  }};
+}})(window);
+"""
+
+
+# ── SMTP helpers ──────────────────────────────────────────────────────────────
+
+class SmtpConfig(BaseModel):
+    host: str
+    port: int = 587
+    username: str = ""
+    password: str = ""
+    from_name: str = ""
+    from_email: str = ""
+    tls: bool = True
+    ssl: bool = False
+
+
+class MailPayload(BaseModel):
+    to: Any  # str or list[str]
+    subject: str
+    html: str = ""
+    text: str = ""
+    from_name: str = ""
+    from_email: str = ""
+
+
+def _smtp_config_path(project: str) -> Path:
+    return safe_path(project) / "smtp.json"
+
+
+def _load_smtp_config(project: str) -> Optional[dict]:
+    path = _smtp_config_path(project)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def _build_smtp_connection(cfg: dict):
+    """Returns an open, ready-to-use SMTP connection (caller must close it)."""
+    host     = cfg["host"]
+    port     = int(cfg.get("port", 587))
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    use_ssl  = cfg.get("ssl", False)
+    use_tls  = cfg.get("tls", True)
+
+    if use_ssl:
+        ctx = ssl_lib.create_default_context()
+        srv = smtplib.SMTP_SSL(host, port, context=ctx, timeout=15)
+    else:
+        srv = smtplib.SMTP(host, port, timeout=15)
+        srv.ehlo()
+        if use_tls:
+            srv.starttls()
+            srv.ehlo()
+
+    if username:
+        srv.login(username, password)
+    return srv
+
+
+def _send_email_sync(cfg: dict, to: str, subject: str,
+                     text: str = "", html: str = "",
+                     from_name: str = "", from_email: str = ""):
+    sender_name  = from_name  or cfg.get("from_name", "")
+    sender_email = from_email or cfg.get("from_email") or cfg.get("username", "")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"{sender_name} <{sender_email}>" if sender_name else sender_email
+    msg["To"]   = to
+
+    if text:
+        msg.attach(MIMEText(text, "plain", "utf-8"))
+    if html:
+        msg.attach(MIMEText(html, "html", "utf-8"))
+    if not text and not html:
+        msg.attach(MIMEText("(no content)", "plain", "utf-8"))
+
+    # Use bare email for the MAIL FROM envelope (avoids server rejection)
+    envelope_from = sender_email.strip()
+
+    srv = _build_smtp_connection(cfg)
+    try:
+        refused = srv.sendmail(envelope_from, [to], msg.as_string())
+        if refused:
+            raise RuntimeError(f"Destinataire(s) refusé(s) : {refused}")
+    finally:
+        try:
+            srv.quit()
+        except Exception:
+            pass
+
+
+def _diagnose_smtp_sync(cfg: dict, to: str) -> list[dict]:
+    """Step-by-step SMTP connection test. Returns a list of step results."""
+    steps = []
+
+    def step(name, fn):
+        try:
+            result = fn()
+            steps.append({"step": name, "ok": True, "detail": str(result or "OK")})
+            return True
+        except Exception as exc:
+            steps.append({"step": name, "ok": False, "detail": str(exc)})
+            return False
+
+    host     = cfg.get("host", "")
+    port     = int(cfg.get("port", 587))
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    use_ssl  = cfg.get("ssl", False)
+    use_tls  = cfg.get("tls", True)
+    sender   = cfg.get("from_email") or username
+
+    srv = None
+
+    if use_ssl:
+        ok = step(f"Connexion SSL à {host}:{port}", lambda: (
+            setattr(_diagnose_smtp_sync, '_srv',
+                    smtplib.SMTP_SSL(host, port, context=ssl_lib.create_default_context(), timeout=10))
+            or "connecté"
+        ))
+        srv = getattr(_diagnose_smtp_sync, '_srv', None)
+    else:
+        def connect_plain():
+            s = smtplib.SMTP(host, port, timeout=10)
+            _diagnose_smtp_sync._srv = s
+            return "connecté"
+        ok = step(f"Connexion TCP à {host}:{port}", connect_plain)
+        srv = getattr(_diagnose_smtp_sync, '_srv', None)
+
+        if ok and srv:
+            step("EHLO", lambda: srv.ehlo())
+            if use_tls:
+                ok2 = step("STARTTLS", lambda: srv.starttls())
+                if ok2:
+                    step("EHLO (post-TLS)", lambda: srv.ehlo())
+
+    if srv and username:
+        step(f"AUTH LOGIN ({username})", lambda: srv.login(username, password))
+
+    if srv and sender and to:
+        step(f"MAIL FROM <{sender}>", lambda: srv.mail(sender))
+        step(f"RCPT TO <{to}>", lambda: srv.rcpt(to))
+        try:
+            srv.rset()
+        except Exception:
+            pass
+
+    if srv:
+        try:
+            srv.quit()
+        except Exception:
+            pass
+
+    return steps
+
+
+# ── SMTP endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project}/smtp")
+def get_smtp(project: str):
+    cfg = _load_smtp_config(project)
+    if not cfg:
+        return {}
+    safe = dict(cfg)
+    if safe.get("password"):
+        safe["password"] = "••••••••"
+    return safe
+
+
+@app.put("/api/projects/{project}/smtp")
+def save_smtp(project: str, config: SmtpConfig):
+    existing = _load_smtp_config(project) or {}
+    data = config.model_dump()
+    if data.get("password") == "••••••••":
+        data["password"] = existing.get("password", "")
+    _smtp_config_path(project).write_text(json.dumps(data, indent=2))
+    return {"message": "Configuration SMTP sauvegardée"}
+
+
+@app.post("/api/projects/{project}/smtp/test")
+async def test_smtp(project: str, body: dict):
+    cfg = _load_smtp_config(project)
+    if not cfg:
+        raise HTTPException(400, "Pas de configuration SMTP pour ce projet")
+    to_addr = body.get("to") or cfg.get("from_email") or cfg.get("username", "")
+    if not to_addr:
+        raise HTTPException(400, "Adresse de destination manquante")
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(
+            _smtp_executor, _send_email_sync, cfg, to_addr,
+            "[Le Mat] Email de test",
+            f"Bonjour,\n\nConfiguration SMTP fonctionnelle !\n\nServeur : {cfg.get('host')}:{cfg.get('port',587)}\nCompte  : {cfg.get('username','')}\n",
+            f"<p>✓ <strong>Configuration SMTP fonctionnelle !</strong></p>"
+            f"<p style='color:#666;font-size:12px'>Serveur : {cfg.get('host')}:{cfg.get('port',587)}<br>Compte : {cfg.get('username','')}</p>",
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return {"message": f"Email de test envoyé à {to_addr}"}
+
+
+@app.post("/api/projects/{project}/smtp/diagnose")
+async def diagnose_smtp(project: str, body: dict):
+    """Step-by-step SMTP diagnostic — returns each step result."""
+    cfg = _load_smtp_config(project)
+    if not cfg:
+        raise HTTPException(400, "Pas de configuration SMTP pour ce projet")
+    to_addr = body.get("to") or cfg.get("from_email") or cfg.get("username", "")
+    loop = asyncio.get_event_loop()
+    steps = await loop.run_in_executor(
+        _smtp_executor, _diagnose_smtp_sync, cfg, to_addr
+    )
+    all_ok = all(s["ok"] for s in steps)
+    return {"steps": steps, "all_ok": all_ok}
+
+
+@app.post("/api/projects/{project}/mail/send", status_code=200)
+async def send_mail(project: str, payload: MailPayload):
+    cfg = _load_smtp_config(project)
+    if not cfg:
+        raise HTTPException(400, "SMTP non configuré pour ce projet")
+    recipients = payload.to if isinstance(payload.to, list) else [payload.to]
+    loop = asyncio.get_event_loop()
+    try:
+        for recipient in recipients:
+            await loop.run_in_executor(
+                _smtp_executor, _send_email_sync, cfg, recipient,
+                payload.subject, payload.text, payload.html,
+                payload.from_name, payload.from_email
+            )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return {"sent": True, "recipients": recipients}
+
+
+# ── Cron / Scheduler ─────────────────────────────────────────────────────────
+
+class CronJob(BaseModel):
+    id: Optional[str] = None
+    name: str
+    script: str
+    schedule: dict          # {type, minutes?, hour?, minute?, day?, expression?}
+    enabled: bool = True
+
+
+def _crons_path(project: str) -> Path:
+    return safe_path(project) / "crons.json"
+
+
+def _cron_logs_path(project: str) -> Path:
+    return safe_path(project) / "cron_logs.json"
+
+
+def _load_crons(project: str) -> list:
+    p = _crons_path(project)
+    return json.loads(p.read_text()) if p.exists() else []
+
+
+def _save_crons(project: str, crons: list):
+    _crons_path(project).write_text(json.dumps(crons, indent=2, default=str))
+
+
+def _log_cron_run(project: str, job_id: str, job_name: str,
+                  status: str, exit_code: int, output: str, ran_at: str):
+    logs_path = _cron_logs_path(project)
+    logs = json.loads(logs_path.read_text()) if logs_path.exists() else []
+    job_logs   = [l for l in logs if l["job_id"] == job_id]
+    other_logs = [l for l in logs if l["job_id"] != job_id]
+    job_logs.insert(0, {
+        "job_id": job_id, "job_name": job_name,
+        "ran_at": ran_at, "status": status,
+        "exit_code": exit_code, "output": output[-8000:],
+    })
+    logs_path.write_text(
+        json.dumps(other_logs + job_logs[:CRON_LOG_MAX], indent=2, default=str)
+    )
+
+
+def _generate_python_lemat_init(project: str) -> str:
+    project_dir = safe_path(project)
+    db_path = find_db_file(project_dir, load_schema(project_dir))
+    db_path_lit = f'_Path("{db_path}")' if db_path else "None"
+    return (
+        "# _lemat_init.py — auto-generated by Le Mat\n"
+        "import sys as _sys\n"
+        "_sys.path.insert(0, '/app')\n"
+        "import db_engine as _dbe, json as _json, smtplib as _smtplib, ssl as _ssl_mod\n"
+        "from pathlib import Path as _Path\n"
+        "from email.mime.multipart import MIMEMultipart as _MIME\n"
+        "from email.mime.text import MIMEText as _MIMEText\n"
+        f'_PROJECT_DIR = _Path("{project_dir}")\n'
+        f"_DB_PATH = {db_path_lit}\n"
+        "\n"
+        "def _get_db():\n"
+        "    global _DB_PATH\n"
+        "    if _DB_PATH and _DB_PATH.exists(): return _DB_PATH\n"
+        "    for f in sorted(_PROJECT_DIR.glob('*.db')): _DB_PATH = f; return f\n"
+        "    raise RuntimeError('Aucune base de donnees trouvee dans le projet')\n"
+        "\n"
+        "class _DBHelper:\n"
+        "    def all(self, table, limit=1000, offset=0, order_by=None, **filters):\n"
+        "        return _dbe.select_all(_get_db(), table, filters or None, limit, offset, order_by)\n"
+        "    def find(self, table, pk_val):\n"
+        "        db = _get_db(); return _dbe.select_one(db, table, _dbe.get_pk_col(db, table), pk_val)\n"
+        "    def create(self, table, data): return _dbe.insert(_get_db(), table, data)\n"
+        "    def update(self, table, pk_val, data):\n"
+        "        db = _get_db(); return _dbe.update(db, table, _dbe.get_pk_col(db, table), pk_val, data)\n"
+        "    def delete(self, table, pk_val):\n"
+        "        db = _get_db(); return _dbe.delete(db, table, _dbe.get_pk_col(db, table), pk_val)\n"
+        "\n"
+        "class _MailHelper:\n"
+        "    def _cfg(self):\n"
+        "        p = _PROJECT_DIR / 'smtp.json'\n"
+        "        if not p.exists(): raise RuntimeError('SMTP non configure')\n"
+        "        return _json.loads(p.read_text())\n"
+        "    def send(self, to, subject, html='', text=''):\n"
+        "        cfg = self._cfg()\n"
+        "        se = cfg.get('from_email') or cfg.get('username', '')\n"
+        "        sn = cfg.get('from_name', '')\n"
+        "        targets = [to] if isinstance(to, str) else list(to)\n"
+        "        msg = _MIME('alternative')\n"
+        "        msg['Subject'] = subject\n"
+        "        msg['From'] = (sn + ' <' + se + '>') if sn else se\n"
+        "        msg['To'] = ', '.join(targets)\n"
+        "        if text: msg.attach(_MIMEText(text, 'plain', 'utf-8'))\n"
+        "        if html: msg.attach(_MIMEText(html, 'html', 'utf-8'))\n"
+        "        if not text and not html: msg.attach(_MIMEText('', 'plain', 'utf-8'))\n"
+        "        h, p2 = cfg['host'], int(cfg.get('port', 587))\n"
+        "        u, pw = cfg.get('username',''), cfg.get('password','')\n"
+        "        if cfg.get('ssl'):\n"
+        "            with _smtplib.SMTP_SSL(h, p2, context=_ssl_mod.create_default_context()) as s:\n"
+        "                (s.login(u, pw) if u else None); s.sendmail(se, targets, msg.as_string())\n"
+        "        else:\n"
+        "            with _smtplib.SMTP(h, p2, timeout=30) as s:\n"
+        "                s.ehlo()\n"
+        "                if cfg.get('tls', True): s.starttls(); s.ehlo()\n"
+        "                (s.login(u, pw) if u else None); s.sendmail(se, targets, msg.as_string())\n"
+        "        print('Email envoye a: ' + ', '.join(targets))\n"
+        "\n"
+        "class _LeMat:\n"
+        "    db   = _DBHelper()\n"
+        "    mail = _MailHelper()\n"
+        "\n"
+        "lemat = _LeMat()\n"
+    )
+
+
+def _generate_js_lemat_init(project: str) -> str:
+    return (
+        "// _lemat_init.js — auto-generated by Le Mat\n"
+        "const http = require('http');\n"
+        "function _api(method, path, body) {\n"
+        "  return new Promise((res, rej) => {\n"
+        "    const d = body ? JSON.stringify(body) : null;\n"
+        "    const o = { method, hostname: '127.0.0.1', port: 8000,\n"
+        f"      path: '/api/projects/{project}' + path,\n"
+        "      headers: { 'Content-Type': 'application/json',\n"
+        "        ...(d ? { 'Content-Length': Buffer.byteLength(d) } : {}) } };\n"
+        "    const req = http.request(o, r => {\n"
+        "      let raw = ''; r.on('data', c => raw += c);\n"
+        "      r.on('end', () => { try { const p = JSON.parse(raw); r.statusCode >= 400 ? rej(p) : res(p); } catch(e) { res(raw); } });\n"
+        "    }); req.on('error', rej); if (d) req.write(d); req.end();\n"
+        "  });\n"
+        "}\n"
+        "global.lemat = {\n"
+        "  db: {\n"
+        "    all:    (t, p={}) => _api('GET', '/data/'+t+'?'+new URLSearchParams(p)),\n"
+        "    find:   (t, id)   => _api('GET', '/data/'+t+'/'+id),\n"
+        "    create: (t, d)    => _api('POST', '/data/'+t, d),\n"
+        "    update: (t, id,d) => _api('PUT', '/data/'+t+'/'+id, d),\n"
+        "    delete: (t, id)   => _api('DELETE', '/data/'+t+'/'+id),\n"
+        "  },\n"
+        "  mail: { send: (o) => _api('POST', '/mail/send', o) },\n"
+        "};\n"
+    )
+
+
+def _write_lemat_inits(project: str):
+    project_dir = safe_path(project)
+    (project_dir / "_lemat_init.py").write_text(_generate_python_lemat_init(project))
+    (project_dir / "_lemat_init.js").write_text(_generate_js_lemat_init(project))
+
+
+async def _run_cron_job(project: str, job_id: str):
+    crons = _load_crons(project)
+    job = next((c for c in crons if c["id"] == job_id), None)
+    if not job:
+        return
+
+    _write_lemat_inits(project)
+
+    project_dir = safe_path(project)
+    script = job["script"]
+    ext = script.rsplit(".", 1)[-1].lower() if "." in script else ""
+    ran_at = datetime.now(timezone.utc).isoformat()
+
+    if ext == "py":
+        run_code = (
+            "exec(open('_lemat_init.py').read()); "
+            f"exec(compile(open({repr(script)}).read(), {repr(script)}, 'exec'))"
+        )
+        command = ["python3", "-u", "-c", run_code]
+    elif ext in ("js", "mjs"):
+        command = ["node", "--require", "./_lemat_init.js", script]
+    else:
+        _log_cron_run(project, job_id, job["name"], "error", -1,
+                      f"Extension non supportée: .{ext}", ran_at)
+        return
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(project_dir),
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            _log_cron_run(project, job_id, job["name"], "error", -1,
+                          "Timeout (300s)", ran_at)
+            return
+
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+        status = "ok" if proc.returncode == 0 else "error"
+        _log_cron_run(project, job_id, job["name"], status, proc.returncode, output, ran_at)
+
+    except Exception as e:
+        _log_cron_run(project, job_id, job["name"], "error", -1, str(e), ran_at)
+
+    # Update last_run / last_status
+    for c in crons:
+        if c["id"] == job_id:
+            c["last_run"] = ran_at
+            c["last_status"] = status if "status" in dir() else "error"
+    _save_crons(project, crons)
+
+
+def _make_trigger(schedule: dict):
+    t = schedule.get("type", "daily")
+    if t == "interval":
+        return IntervalTrigger(minutes=int(schedule.get("minutes", 60)))
+    elif t == "daily":
+        return CronTrigger(hour=schedule.get("hour", 9), minute=schedule.get("minute", 0))
+    elif t == "weekly":
+        return CronTrigger(
+            day_of_week=schedule.get("day", "mon"),
+            hour=schedule.get("hour", 9),
+            minute=schedule.get("minute", 0),
+        )
+    elif t == "cron":
+        return CronTrigger.from_crontab(schedule.get("expression", "0 9 * * *"))
+    raise ValueError(f"Type de schedule inconnu: {t}")
+
+
+def _sched_id(project: str, job_id: str) -> str:
+    return f"{project}:{job_id}"
+
+
+def _register_cron(project: str, job: dict):
+    sid = _sched_id(project, job["id"])
+    if _scheduler.get_job(sid):
+        _scheduler.remove_job(sid)
+    if not job.get("enabled", True):
+        return
+    trigger = _make_trigger(job["schedule"])
+    _scheduler.add_job(
+        _run_cron_job, trigger=trigger, id=sid,
+        args=[project, job["id"]], replace_existing=True,
+    )
+
+
+def _unregister_cron(project: str, job_id: str):
+    sid = _sched_id(project, job_id)
+    if _scheduler.get_job(sid):
+        _scheduler.remove_job(sid)
+
+
+def _reload_all_crons():
+    if not BASE_DIR.exists():
+        return
+    for pdir in BASE_DIR.iterdir():
+        if pdir.is_dir():
+            for job in _load_crons(pdir.name):
+                try:
+                    _register_cron(pdir.name, job)
+                except Exception as e:
+                    print(f"[cron] Erreur chargement {pdir.name}/{job.get('id')}: {e}")
+
+
+@app.on_event("startup")
+async def startup():
+    _scheduler.start()
+    _reload_all_crons()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    _scheduler.shutdown(wait=False)
+
+
+# ── Cron endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project}/crons")
+def list_crons(project: str):
+    crons = _load_crons(project)
+    for job in crons:
+        sj = _scheduler.get_job(_sched_id(project, job["id"]))
+        job["next_run"] = (
+            sj.next_run_time.isoformat() if sj and sj.next_run_time else None
+        )
+    return crons
+
+
+@app.post("/api/projects/{project}/crons", status_code=201)
+def create_cron(project: str, job: CronJob):
+    crons = _load_crons(project)
+    new_job = job.model_dump()
+    new_job["id"] = uuid.uuid4().hex[:8]
+    new_job.setdefault("last_run", None)
+    new_job.setdefault("last_status", None)
+    new_job["created_at"] = datetime.now(timezone.utc).isoformat()
+    crons.append(new_job)
+    _save_crons(project, crons)
+    try:
+        _register_cron(project, new_job)
+    except Exception as e:
+        raise HTTPException(400, f"Schedule invalide: {e}")
+    return new_job
+
+
+@app.put("/api/projects/{project}/crons/{job_id}")
+def update_cron(project: str, job_id: str, job: CronJob):
+    crons = _load_crons(project)
+    idx = next((i for i, c in enumerate(crons) if c["id"] == job_id), None)
+    if idx is None:
+        raise HTTPException(404, "Cron non trouvé")
+    updated = {**crons[idx], **{k: v for k, v in job.model_dump().items() if v is not None}, "id": job_id}
+    crons[idx] = updated
+    _save_crons(project, crons)
+    try:
+        _register_cron(project, updated)
+    except Exception as e:
+        raise HTTPException(400, f"Schedule invalide: {e}")
+    return updated
+
+
+@app.delete("/api/projects/{project}/crons/{job_id}")
+def delete_cron(project: str, job_id: str):
+    crons = [c for c in _load_crons(project) if c["id"] != job_id]
+    _save_crons(project, crons)
+    _unregister_cron(project, job_id)
+    return {"deleted": True}
+
+
+@app.post("/api/projects/{project}/crons/{job_id}/run")
+async def run_cron_now(project: str, job_id: str):
+    crons = _load_crons(project)
+    if not any(c["id"] == job_id for c in crons):
+        raise HTTPException(404, "Cron non trouvé")
+    asyncio.create_task(_run_cron_job(project, job_id))
+    return {"message": "Exécution lancée"}
+
+
+@app.get("/api/projects/{project}/crons/{job_id}/logs")
+def get_cron_logs(project: str, job_id: str):
+    logs_path = _cron_logs_path(project)
+    if not logs_path.exists():
+        return []
+    return [l for l in json.loads(logs_path.read_text()) if l["job_id"] == job_id]
+
+
+# ── Live Reload WebSocket ─────────────────────────────────────────────────────
 
 @app.websocket("/api/projects/{project}/livereload")
 async def livereload_ws(project: str, ws: WebSocket):
@@ -111,25 +861,25 @@ async def livereload_ws(project: str, ws: WebSocket):
     livereload_clients.setdefault(project, []).append(ws)
     try:
         while True:
-            await ws.receive_text()   # keep-alive ping/pong
+            await ws.receive_text()
     except WebSocketDisconnect:
         clients = livereload_clients.get(project, [])
         if ws in clients:
             clients.remove(ws)
 
 
-# ─── Projects ─────────────────────────────────────────────────────────────────
+# ── Projects ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/projects", response_model=List[str])
 def list_projects():
-    return [d.name for d in BASE_DIR.iterdir() if d.is_dir()]
+    return [d.name for d in sorted(BASE_DIR.iterdir()) if d.is_dir()]
 
 
 @app.post("/api/projects/{project}", status_code=201)
 def create_project(project: str):
     path = safe_path(project)
     if path.exists():
-        raise HTTPException(status_code=409, detail="Project already exists")
+        raise HTTPException(409, "Project already exists")
     path.mkdir(parents=True)
     return {"message": f"Project '{project}' created"}
 
@@ -138,28 +888,28 @@ def create_project(project: str):
 def delete_project(project: str):
     path = safe_path(project)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(404, "Project not found")
     shutil.rmtree(path)
     return {"message": f"Project '{project}' deleted"}
 
 
-# ─── File Tree ────────────────────────────────────────────────────────────────
+# ── File Tree ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/projects/{project}/tree")
 def get_tree(project: str):
     path = safe_path(project)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(404, "Project not found")
     return dir_tree(path)
 
 
-# ─── File CRUD ────────────────────────────────────────────────────────────────
+# ── File CRUD ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/projects/{project}/files/{filepath:path}")
 async def read_file(project: str, filepath: str):
     path = safe_path(project, filepath)
     if not path.exists() or path.is_dir():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(404, "File not found")
     async with aiofiles.open(path, "r", errors="replace") as f:
         content = await f.read()
     return {"path": filepath, "content": content}
@@ -175,7 +925,6 @@ async def write_file(project: str, filepath: str, body: FileWrite):
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiofiles.open(path, "w") as f:
         await f.write(body.content)
-    # Notify browser tabs watching this project
     await broadcast_reload(project)
     return {"message": "Saved", "path": filepath}
 
@@ -184,7 +933,7 @@ async def write_file(project: str, filepath: str, body: FileWrite):
 def delete_file(project: str, filepath: str):
     path = safe_path(project, filepath)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(404, "Not found")
     if path.is_dir():
         shutil.rmtree(path)
     else:
@@ -192,7 +941,14 @@ def delete_file(project: str, filepath: str):
     return {"message": "Deleted"}
 
 
-# ─── Upload ───────────────────────────────────────────────────────────────────
+@app.post("/api/projects/{project}/mkdir/{folderpath:path}")
+def make_dir(project: str, folderpath: str):
+    path = safe_path(project, folderpath)
+    path.mkdir(parents=True, exist_ok=True)
+    return {"message": f"Folder '{folderpath}' created"}
+
+
+# ── Upload ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/projects/{project}/upload")
 async def upload_files(
@@ -202,7 +958,7 @@ async def upload_files(
 ):
     project_dir = safe_path(project)
     if not project_dir.exists():
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(404, "Project not found")
     saved = []
     for upload in files:
         dest = safe_path(project, os.path.join(folder, upload.filename))
@@ -215,17 +971,166 @@ async def upload_files(
     return {"uploaded": saved}
 
 
-@app.post("/api/projects/{project}/mkdir/{folderpath:path}")
-def make_dir(project: str, folderpath: str):
-    path = safe_path(project, folderpath)
-    path.mkdir(parents=True, exist_ok=True)
-    return {"message": f"Folder '{folderpath}' created"}
+# ── Schema ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project}/schema")
+def get_schema(project: str):
+    """Return parsed schema info (models, fields, db path)."""
+    project_dir = safe_path(project)
+    schema = load_schema(project_dir)
+    db_path = find_db_file(project_dir, schema)
+
+    if not schema and not db_path:
+        return {"schema": None, "tables": [], "database": None}
+
+    tables_info = []
+    if db_path and db_path.exists():
+        for t in db_engine.list_tables(db_path):
+            cols = db_engine.table_columns(db_path, t)
+            count = db_engine.row_count(db_path, t)
+            tables_info.append({"name": t, "columns": cols, "rows": count})
+
+    return {
+        "schema": schema.to_dict() if schema else None,
+        "tables": tables_info,
+        "database": db_path.name if db_path else None,
+        "hasSchemaFile": find_schema_file(project_dir) is not None,
+    }
 
 
-# ─── Code Execution (SSE streaming) ──────────────────────────────────────────
+@app.post("/api/projects/{project}/schema/sync")
+def sync_schema(project: str):
+    """Parse models.lemat and apply CREATE TABLE IF NOT EXISTS to the .db file."""
+    project_dir = safe_path(project)
+    schema = load_schema(project_dir)
+    if not schema:
+        raise HTTPException(404, "No .lemat schema file found in project")
 
-NON_EXECUTABLE = {"html", "htm", "css", "svg", "json", "xml", "md", "txt"}
+    db_path = project_dir / schema.database
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    stmts = model_parser.to_sql(schema)
+    db_engine.migrate(db_path, stmts)
+
+    return {
+        "message": f"Schema synced → {schema.database}",
+        "tables": [m.name for m in schema.models],
+        "statements": stmts,
+    }
+
+
+# ── SDK endpoint ──────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project}/lemat-sdk.js")
+def get_sdk(project: str):
+    project_dir = safe_path(project)
+    schema = load_schema(project_dir)
+    js = generate_sdk(project, schema) if schema else generate_empty_sdk(project)
+    return Response(content=js, media_type="application/javascript")
+
+
+# ── Data API (auto-CRUD for every table) ─────────────────────────────────────
+
+@app.get("/api/projects/{project}/data")
+def list_data_tables(project: str):
+    """List all tables available in the project database."""
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        return {"tables": []}
+    tables = db_engine.list_tables(db_path)
+    result = []
+    for t in tables:
+        cols = db_engine.table_columns(db_path, t)
+        count = db_engine.row_count(db_path, t)
+        result.append({"name": t, "columns": cols, "rows": count})
+    return {"tables": result}
+
+
+@app.get("/api/projects/{project}/data/{table}")
+def data_list(
+    project: str,
+    table: str,
+    limit: int = Query(default=100, le=1000),
+    offset: int = Query(default=0, ge=0),
+    order_by: Optional[str] = Query(default=None),
+):
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+
+    real_table = resolve_table(schema, db_path, table)
+
+    # Extra query params → filters
+    filters = {}  # could be extended via request.query_params
+
+    rows = db_engine.select_all(db_path, real_table, filters or None, limit, offset, order_by)
+    total = db_engine.row_count(db_path, real_table)
+    return {"table": real_table, "total": total, "limit": limit, "offset": offset, "rows": rows}
+
+
+@app.get("/api/projects/{project}/data/{table}/{pk}")
+def data_get_one(project: str, table: str, pk: str):
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+
+    real_table = resolve_table(schema, db_path, table)
+    pk_col = db_engine.get_pk_col(db_path, real_table)
+
+    # Try int then str
+    pk_val: Any = int(pk) if pk.isdigit() else pk
+    row = db_engine.select_one(db_path, real_table, pk_col, pk_val)
+    if row is None:
+        raise HTTPException(404, f"Row {pk} not found in {real_table}")
+    return row
+
+
+@app.post("/api/projects/{project}/data/{table}", status_code=201)
+def data_create(project: str, table: str, body: dict):
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+
+    real_table = resolve_table(schema, db_path, table)
+    try:
+        row = db_engine.insert(db_path, real_table, body)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return row
+
+
+@app.put("/api/projects/{project}/data/{table}/{pk}")
+def data_update(project: str, table: str, pk: str, body: dict):
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+
+    real_table = resolve_table(schema, db_path, table)
+    pk_col = db_engine.get_pk_col(db_path, real_table)
+    pk_val: Any = int(pk) if pk.isdigit() else pk
+
+    row = db_engine.update(db_path, real_table, pk_col, pk_val, body)
+    if row is None:
+        raise HTTPException(404, f"Row {pk} not found")
+    return row
+
+
+@app.delete("/api/projects/{project}/data/{table}/{pk}")
+def data_delete(project: str, table: str, pk: str):
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+
+    real_table = resolve_table(schema, db_path, table)
+    pk_col = db_engine.get_pk_col(db_path, real_table)
+    pk_val: Any = int(pk) if pk.isdigit() else pk
+
+    if not db_engine.delete(db_path, real_table, pk_col, pk_val):
+        raise HTTPException(404, f"Row {pk} not found")
+    return {"deleted": True, "id": pk}
+
+
+# ── Code Execution ────────────────────────────────────────────────────────────
 
 @app.get("/api/projects/{project}/exec/{filepath:path}")
 async def exec_file(project: str, filepath: str, cmd: str = None):
@@ -233,15 +1138,12 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
     file_path   = safe_path(project, filepath)
 
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(404, "File not found")
 
     ext = filepath.rsplit(".", 1)[-1].lower() if "." in filepath else ""
 
     if not cmd and ext in NON_EXECUTABLE:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Les fichiers .{ext} ne s'exécutent pas côté serveur.",
-        )
+        raise HTTPException(422, f"Les fichiers .{ext} ne s'exécutent pas côté serveur.")
 
     if cmd:
         command = shlex.split(cmd)
@@ -249,10 +1151,7 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
     elif ext in LANG_RUNNERS:
         command = [c.replace("{file}", filepath) for c in LANG_RUNNERS[ext]]
     else:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Aucun runner pour .{ext} — utilise le champ 'commande custom'.",
-        )
+        raise HTTPException(422, f"Aucun runner pour .{ext} — utilise le champ 'commande custom'.")
 
     run_id = uuid.uuid4().hex[:8]
 
@@ -266,7 +1165,6 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
                 cwd=str(project_dir),
             )
             active_processes[run_id] = proc
-
             queue: asyncio.Queue = asyncio.Queue()
 
             async def pump(stream, kind: str):
@@ -283,7 +1181,6 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
                 asyncio.create_task(pump(proc.stdout, "stdout")),
                 asyncio.create_task(pump(proc.stderr, "stderr")),
             ]
-
             done = 0
             while done < 2:
                 try:
@@ -300,7 +1197,6 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
             await asyncio.gather(*tasks, return_exceptions=True)
             await proc.wait()
             yield f"data: {json.dumps({'type': 'done', 'code': proc.returncode})}\n\n"
-
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'data': str(e) + chr(10)})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'code': -1})}\n\n"
@@ -326,20 +1222,20 @@ async def stop_run(run_id: str):
     return {"stopped": False}
 
 
-# ─── Serve project files (with live reload injected in HTML) ─────────────────
+# ── Serve project files ───────────────────────────────────────────────────────
 
 @app.get("/projects/{project}/{filepath:path}")
 async def serve_project_file(project: str, filepath: str):
     path = safe_path(project, filepath)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(404, "File not found")
     if path.is_dir():
         index = path / "index.html"
         if index.exists():
-            return HTMLResponse(inject_livereload(index.read_text(errors="replace")))
-        raise HTTPException(status_code=404, detail="No index.html found")
+            return HTMLResponse(inject_scripts(index.read_text(errors="replace")))
+        raise HTTPException(404, "No index.html found")
     if path.suffix.lower() in (".html", ".htm"):
-        return HTMLResponse(inject_livereload(path.read_text(errors="replace")))
+        return HTMLResponse(inject_scripts(path.read_text(errors="replace")))
     return FileResponse(path)
 
 
@@ -347,8 +1243,8 @@ async def serve_project_file(project: str, filepath: str):
 async def serve_project_index(project: str):
     index = safe_path(project, "index.html")
     if index.exists():
-        return HTMLResponse(inject_livereload(index.read_text(errors="replace")))
-    raise HTTPException(status_code=404, detail="No index.html found in project")
+        return HTMLResponse(inject_scripts(index.read_text(errors="replace")))
+    raise HTTPException(404, "No index.html found in project")
 
 
 @app.get("/")

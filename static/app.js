@@ -54,6 +54,7 @@ async function init() {
     document.getElementById('btn-toggle-term').textContent =
       panel.classList.contains('collapsed') ? '⬆ Logs' : '⬇ Logs';
   };
+  document.getElementById('btn-sync-db').onclick = () => syncSchema();
 }
 
 // ── API helpers ───────────────────────────────────────────────────────
@@ -119,7 +120,8 @@ async function selectProject(name) {
     li.classList.toggle('active', li.dataset.name === name));
   document.getElementById('current-project-name').textContent = name;
   document.getElementById('filetree-section').style.display = 'flex';
-  await loadTree();
+  document.getElementById('email-section').style.display = 'flex';
+  await Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection()]);
 }
 
 // ── File tree ─────────────────────────────────────────────────────────
@@ -245,6 +247,9 @@ async function openFile(path) {
 }
 
 function showTab(tab) {
+  if (tab.type === 'data') { showDataTab(tab); return; }
+  const container = document.getElementById('editor-container');
+  container.querySelectorAll('.data-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'none';
   document.getElementById('monaco-container').style.display = 'block';
@@ -255,6 +260,7 @@ function showTab(tab) {
 
 function showWelcome() {
   document.getElementById('monaco-container').style.display = 'none';
+  document.getElementById('editor-container').querySelectorAll('.data-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'flex';
 }
@@ -284,7 +290,7 @@ function renderTabs() {
 function closeTab(path) {
   const idx = tabs.findIndex(t => t.path === path);
   if (idx === -1) return;
-  tabs[idx].model.dispose();
+  if (tabs[idx].model) tabs[idx].model.dispose();
   tabs.splice(idx, 1);
   if (activeTab?.path === path) activeTab = tabs[Math.min(idx, tabs.length - 1)] || null;
   renderTabs();
@@ -317,6 +323,192 @@ function highlightTreeItem(path) {
     if (el.querySelector('.tree-name')?.textContent === path.split('/').pop())
       el.classList.add('active');
   });
+}
+
+// ── DB Section ───────────────────────────────────────────────────────
+let dbSchema = null;
+
+async function loadDbSection() {
+  const info = await api('GET', `/api/projects/${currentProject}/schema`);
+  dbSchema = info;
+  const section = document.getElementById('db-section');
+  const tree    = document.getElementById('db-tree');
+
+  if (!info.tables.length && !info.hasSchemaFile) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'flex';
+  tree.innerHTML = '';
+
+  if (info.hasSchemaFile && !info.database) {
+    const hint = document.createElement('div');
+    hint.style.cssText = 'padding:8px 12px;font-size:12px;color:var(--warn)';
+    hint.textContent = '⚡ Clique "Sync" pour créer la base depuis le schéma';
+    tree.appendChild(hint);
+  }
+
+  info.tables.forEach(t => {
+    const wrap = document.createElement('div');
+
+    const row = document.createElement('div');
+    row.classList.add('db-table-item');
+    row.innerHTML = `
+      <span>🗄</span>
+      <span class="db-table-name">${t.name}</span>
+      <span class="db-table-count">${t.rows} lignes</span>`;
+
+    const fields = document.createElement('div');
+    fields.classList.add('db-field-list');
+    fields.style.display = 'none';
+
+    t.columns.forEach(col => {
+      const badges = [];
+      if (col.pk)     badges.push('<span class="db-field-badge">PK</span>');
+      if (col.notnull) badges.push('<span class="db-field-badge">NN</span>');
+      const f = document.createElement('div');
+      f.classList.add('db-field-item');
+      f.innerHTML = `
+        <span class="db-field-name">${col.name}</span>
+        <span class="db-field-type">${col.type}</span>
+        ${badges.join('')}`;
+      fields.appendChild(f);
+    });
+
+    // Click → toggle fields + open data view
+    let open = false;
+    row.onclick = () => {
+      open = !open;
+      fields.style.display = open ? 'block' : 'none';
+      openDataView(t.name);
+      document.querySelectorAll('.db-table-item').forEach(el => el.classList.remove('active'));
+      row.classList.add('active');
+    };
+
+    wrap.appendChild(row);
+    wrap.appendChild(fields);
+    tree.appendChild(wrap);
+  });
+}
+
+async function syncSchema() {
+  if (!currentProject) return;
+  try {
+    const res = await api('POST', `/api/projects/${currentProject}/schema/sync`);
+    toast(`✓ ${res.message}`, 'success');
+    await loadDbSection();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Data View (table browser) ─────────────────────────────────────────
+let dataViewTab = null;   // { tableName, type:'data' }
+
+async function openDataView(tableName) {
+  // Check if already open
+  const existing = tabs.find(t => t.type === 'data' && t.tableName === tableName);
+  if (existing) {
+    activeTab = existing;
+    renderTabs();
+    showDataTab(existing);
+    return;
+  }
+
+  const tab = { path: `[data] ${tableName}`, tableName, type: 'data', modified: false };
+  tabs.push(tab);
+  activeTab = tab;
+  renderTabs();
+  await showDataTab(tab);
+}
+
+async function showDataTab(tab) {
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.style.display = 'none';
+  document.getElementById('monaco-container').style.display = 'none';
+
+  const container = document.getElementById('editor-container');
+
+  // Remove existing data view
+  container.querySelectorAll('.data-view').forEach(el => el.remove());
+
+  const data = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}?limit=200`);
+
+  const view = document.createElement('div');
+  view.classList.add('data-view');
+
+  // Toolbar
+  const toolbar = document.createElement('div');
+  toolbar.classList.add('data-view-toolbar');
+  toolbar.innerHTML = `
+    <span>🗄 <strong>${tab.tableName}</strong></span>
+    <span>${data.total} ligne(s)</span>
+    <div style="flex:1"></div>
+    <button id="dv-refresh">↺ Actualiser</button>`;
+  view.appendChild(toolbar);
+
+  // Grid
+  const wrap = document.createElement('div');
+  wrap.classList.add('data-grid-wrap');
+
+  if (!data.rows.length) {
+    wrap.innerHTML = '<div class="data-empty">Aucune donnée dans cette table.</div>';
+  } else {
+    const cols = Object.keys(data.rows[0]);
+    const table = document.createElement('table');
+    table.classList.add('data-grid');
+
+    // Header
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '<th></th></tr>';
+    table.appendChild(thead);
+
+    // Rows
+    const tbody = document.createElement('tbody');
+    data.rows.forEach(row => {
+      const tr = document.createElement('tr');
+      tr.dataset.rowData = JSON.stringify(row);
+      cols.forEach(col => {
+        const td = document.createElement('td');
+        const val = row[col];
+        if (val === null || val === undefined) {
+          td.classList.add('null-val');
+          td.textContent = 'null';
+        } else {
+          td.textContent = String(val);
+        }
+        tr.appendChild(td);
+      });
+      // Actions cell
+      const actionsTd = document.createElement('td');
+      actionsTd.innerHTML = `<span class="row-actions">
+        <button class="btn-row-del" title="Supprimer">🗑</button>
+      </span>`;
+      tr.appendChild(actionsTd);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    // Delete row
+    tbody.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.btn-row-del');
+      if (!btn) return;
+      const tr = btn.closest('tr');
+      const rowData = JSON.parse(tr.dataset.rowData);
+      // Find PK value (first column)
+      const pkVal = rowData[cols[0]];
+      await api('DELETE', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`);
+      tr.remove();
+      toast('Ligne supprimée', 'success');
+    });
+
+    wrap.appendChild(table);
+  }
+
+  view.appendChild(wrap);
+  container.appendChild(view);
+
+  toolbar.querySelector('#dv-refresh').onclick = () => showDataTab(tab);
 }
 
 // ── Run ───────────────────────────────────────────────────────────────
@@ -487,3 +679,320 @@ function toast(msg, type = 'success') {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.className = ''; }, 2500);
 }
+
+// ── Cron Jobs ─────────────────────────────────────────────────────────
+let _editingCronId = null;
+
+async function loadCronSection() {
+  if (!currentProject) return;
+  document.getElementById('cron-section').style.display = 'flex';
+  await renderCronList();
+}
+
+async function renderCronList() {
+  const list = document.getElementById('cron-list');
+  try {
+    const crons = await api('GET', `/api/projects/${currentProject}/crons`);
+    list.innerHTML = '';
+    if (!crons.length) {
+      list.innerHTML = '<div class="cron-empty">Aucun cron. Clique + pour en créer.</div>';
+      return;
+    }
+    crons.forEach(job => {
+      const div = document.createElement('div');
+      div.className = 'cron-item';
+      const statusClass = !job.enabled ? 'off' : job.last_status === 'error' ? 'err' : 'ok';
+      const nextLabel = job.next_run
+        ? new Date(job.next_run).toLocaleString('fr-FR', { weekday:'short', hour:'2-digit', minute:'2-digit', timeZone:'UTC' }) + ' UTC'
+        : '—';
+      div.innerHTML = `
+        <span class="cron-dot ${statusClass}">●</span>
+        <div class="cron-info">
+          <span class="cron-name">${job.name}</span>
+          <span class="cron-next">${job.script} · prochain: ${nextLabel}</span>
+        </div>
+        <div class="cron-btns">
+          <button class="btn-cron-run"  title="Exécuter maintenant">▶</button>
+          <button class="btn-cron-logs" title="Voir les logs">📋</button>
+          <button class="btn-cron-edit" title="Modifier">✏</button>
+          <button class="btn-cron-del"  title="Supprimer">✕</button>
+        </div>`;
+      div.querySelector('.btn-cron-run').onclick  = () => runCronNow(job.id, job.name);
+      div.querySelector('.btn-cron-logs').onclick = () => openCronLogs(job.id, job.name);
+      div.querySelector('.btn-cron-edit').onclick = () => openCronModal(job);
+      div.querySelector('.btn-cron-del').onclick  = () =>
+        confirmDelete(`Supprimer le cron "${job.name}" ?`, async () => {
+          await api('DELETE', `/api/projects/${currentProject}/crons/${job.id}`);
+          toast('Cron supprimé', 'success');
+          await renderCronList();
+        });
+      list.appendChild(div);
+    });
+  } catch { list.innerHTML = ''; }
+}
+
+async function runCronNow(jobId, name) {
+  try {
+    await api('POST', `/api/projects/${currentProject}/crons/${jobId}/run`);
+    toast(`▶ ${name} lancé`, 'success');
+    setTimeout(renderCronList, 2000);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function openCronLogs(jobId, name) {
+  document.getElementById('cron-logs-title').textContent = `Logs — ${name}`;
+  document.getElementById('cron-logs-body').innerHTML = '<div style="padding:12px;color:var(--muted)">Chargement…</div>';
+  document.getElementById('cron-logs-backdrop').classList.remove('hidden');
+  try {
+    const logs = await api('GET', `/api/projects/${currentProject}/crons/${jobId}/logs`);
+    const body = document.getElementById('cron-logs-body');
+    if (!logs.length) { body.innerHTML = '<div class="cron-log-empty">Aucun log pour ce cron.</div>'; return; }
+    body.innerHTML = logs.map(l => `
+      <div class="cron-log-entry ${l.status}">
+        <div class="cron-log-meta">
+          <span class="cron-log-status">${l.status === 'ok' ? '✓' : '✗'} ${l.status}</span>
+          <span class="cron-log-date">${new Date(l.ran_at).toLocaleString('fr-FR')}</span>
+          <span class="cron-log-code">exit ${l.exit_code}</span>
+        </div>
+        <pre class="cron-log-output">${escHtml(l.output || '(no output)')}</pre>
+      </div>`).join('');
+  } catch { document.getElementById('cron-logs-body').innerHTML = '<div style="padding:12px;color:var(--danger)">Erreur</div>'; }
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+document.getElementById('btn-cron-logs-close').onclick = () =>
+  document.getElementById('cron-logs-backdrop').classList.add('hidden');
+document.getElementById('cron-logs-backdrop').onclick = (e) => {
+  if (e.target === document.getElementById('cron-logs-backdrop'))
+    document.getElementById('cron-logs-backdrop').classList.add('hidden');
+};
+
+// Schedule type toggle
+document.getElementById('cron-sched-type').onchange = () => updateCronSchedUI();
+function updateCronSchedUI() {
+  const type = document.getElementById('cron-sched-type').value;
+  document.getElementById('cron-params-time').style.display     = (type === 'daily' || type === 'weekly') ? 'flex' : 'none';
+  document.getElementById('cron-params-interval').style.display = type === 'interval' ? 'flex' : 'none';
+  document.getElementById('cron-params-cron').style.display     = type === 'cron' ? 'flex' : 'none';
+  document.getElementById('cron-day-wrap').style.display        = type === 'weekly' ? 'flex' : 'none';
+}
+updateCronSchedUI();
+
+async function openCronModal(job = null) {
+  _editingCronId = job ? job.id : null;
+  document.getElementById('cron-modal-title').textContent = job ? '✏ Modifier le cron' : '⏰ Nouveau cron job';
+
+  // Populate script dropdown with .py and .js files from project
+  const scriptSel = document.getElementById('cron-script');
+  scriptSel.innerHTML = '';
+  try {
+    const tree = await api('GET', `/api/projects/${currentProject}/tree`);
+    const files = flattenTree(tree.children, '');
+    const scripts = files.filter(f => /\.(py|js|mjs)$/.test(f));
+    if (!scripts.length) scriptSel.innerHTML = '<option disabled>Aucun script .py/.js dans ce projet</option>';
+    else scripts.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; scriptSel.appendChild(o); });
+  } catch {}
+
+  if (job) {
+    document.getElementById('cron-name').value = job.name;
+    scriptSel.value = job.script;
+    document.getElementById('cron-sched-type').value = job.schedule.type || 'daily';
+    document.getElementById('cron-sched-day').value  = job.schedule.day    || 'mon';
+    document.getElementById('cron-sched-hour').value   = job.schedule.hour   ?? 9;
+    document.getElementById('cron-sched-minute').value = job.schedule.minute ?? 0;
+    document.getElementById('cron-sched-minutes').value = job.schedule.minutes || 60;
+    document.getElementById('cron-sched-expr').value    = job.schedule.expression || '';
+    document.getElementById('cron-enabled').checked = job.enabled !== false;
+  } else {
+    document.getElementById('cron-name').value = '';
+    document.getElementById('cron-sched-type').value = 'daily';
+    document.getElementById('cron-sched-hour').value = '9';
+    document.getElementById('cron-sched-minute').value = '0';
+    document.getElementById('cron-enabled').checked = true;
+  }
+  updateCronSchedUI();
+  document.getElementById('cron-backdrop').classList.remove('hidden');
+}
+
+function flattenTree(children, prefix) {
+  const files = [];
+  (children || []).forEach(node => {
+    const path = prefix ? `${prefix}/${node.name}` : node.name;
+    if (node.type === 'file') files.push(path);
+    else files.push(...flattenTree(node.children, path));
+  });
+  return files;
+}
+
+function cronFormData() {
+  const type = document.getElementById('cron-sched-type').value;
+  const schedule = { type };
+  if (type === 'daily') {
+    schedule.hour   = parseInt(document.getElementById('cron-sched-hour').value, 10);
+    schedule.minute = parseInt(document.getElementById('cron-sched-minute').value, 10);
+  } else if (type === 'weekly') {
+    schedule.day    = document.getElementById('cron-sched-day').value;
+    schedule.hour   = parseInt(document.getElementById('cron-sched-hour').value, 10);
+    schedule.minute = parseInt(document.getElementById('cron-sched-minute').value, 10);
+  } else if (type === 'interval') {
+    schedule.minutes = parseInt(document.getElementById('cron-sched-minutes').value, 10);
+  } else if (type === 'cron') {
+    schedule.expression = document.getElementById('cron-sched-expr').value.trim();
+  }
+  return {
+    name:     document.getElementById('cron-name').value.trim(),
+    script:   document.getElementById('cron-script').value,
+    schedule,
+    enabled:  document.getElementById('cron-enabled').checked,
+  };
+}
+
+document.getElementById('btn-new-cron').onclick = () => openCronModal();
+document.getElementById('btn-cron-cancel').onclick = () =>
+  document.getElementById('cron-backdrop').classList.add('hidden');
+document.getElementById('cron-backdrop').onclick = (e) => {
+  if (e.target === document.getElementById('cron-backdrop'))
+    document.getElementById('cron-backdrop').classList.add('hidden');
+};
+
+document.getElementById('btn-cron-save').onclick = async () => {
+  const data = cronFormData();
+  if (!data.name)   { toast('Nom requis', 'error'); return; }
+  if (!data.script) { toast('Script requis', 'error'); return; }
+  try {
+    if (_editingCronId) {
+      await api('PUT', `/api/projects/${currentProject}/crons/${_editingCronId}`, data);
+      toast('Cron mis à jour ✓', 'success');
+    } else {
+      await api('POST', `/api/projects/${currentProject}/crons`, data);
+      toast('Cron créé ✓', 'success');
+    }
+    document.getElementById('cron-backdrop').classList.add('hidden');
+    await renderCronList();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Email / SMTP ───────────────────────────────────────────────────────
+async function loadEmailStatus() {
+  if (!currentProject) return;
+  const statusEl = document.getElementById('email-status');
+  try {
+    const cfg = await api('GET', `/api/projects/${currentProject}/smtp`);
+    const configured = !!(cfg.host);
+    statusEl.innerHTML = configured
+      ? `<div class="email-status-ok">✓ ${cfg.from_email || cfg.username || cfg.host}</div>`
+      : `<div class="email-status-hint">Clique ⚙ pour configurer un serveur SMTP</div>`;
+  } catch {
+    statusEl.innerHTML = '';
+  }
+}
+
+document.getElementById('btn-email-config').onclick = () => openSmtpModal();
+
+async function openSmtpModal() {
+  const backdrop = document.getElementById('smtp-backdrop');
+  backdrop.classList.remove('hidden');
+
+  // Load existing config
+  try {
+    const cfg = await api('GET', `/api/projects/${currentProject}/smtp`);
+    document.getElementById('smtp-host').value       = cfg.host       || '';
+    document.getElementById('smtp-port').value       = cfg.port       || 587;
+    document.getElementById('smtp-user').value       = cfg.username   || '';
+    document.getElementById('smtp-pass').value       = cfg.password   || '';
+    document.getElementById('smtp-from-name').value  = cfg.from_name  || '';
+    document.getElementById('smtp-from-email').value = cfg.from_email || '';
+    document.getElementById('smtp-tls').checked      = cfg.tls !== false;
+    document.getElementById('smtp-ssl').checked      = !!cfg.ssl;
+    document.getElementById('smtp-test-to').value    = cfg.from_email || '';
+  } catch { /* fresh config */ }
+}
+
+function closeSmtpModal() {
+  document.getElementById('smtp-backdrop').classList.add('hidden');
+}
+
+function smtpFormData() {
+  return {
+    host:       document.getElementById('smtp-host').value.trim(),
+    port:       parseInt(document.getElementById('smtp-port').value, 10) || 587,
+    username:   document.getElementById('smtp-user').value.trim(),
+    password:   document.getElementById('smtp-pass').value,
+    from_name:  document.getElementById('smtp-from-name').value.trim(),
+    from_email: document.getElementById('smtp-from-email').value.trim(),
+    tls:        document.getElementById('smtp-tls').checked,
+    ssl:        document.getElementById('smtp-ssl').checked,
+  };
+}
+
+document.getElementById('btn-smtp-cancel').onclick = closeSmtpModal;
+
+document.getElementById('btn-smtp-save').onclick = async () => {
+  const data = smtpFormData();
+  if (!data.host) { toast('Hôte SMTP requis', 'error'); return; }
+  try {
+    await api('PUT', `/api/projects/${currentProject}/smtp`, data);
+    toast('Config SMTP sauvegardée ✓', 'success');
+    closeSmtpModal();
+    await loadEmailStatus();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+};
+
+document.getElementById('btn-smtp-test').onclick = async () => {
+  // Save first, then test
+  const data = smtpFormData();
+  if (!data.host) { toast('Hôte SMTP requis', 'error'); return; }
+  const btn = document.getElementById('btn-smtp-test');
+  btn.textContent = '…'; btn.disabled = true;
+  try {
+    await api('PUT', `/api/projects/${currentProject}/smtp`, data);
+    const to = document.getElementById('smtp-test-to').value.trim() || data.from_email;
+    await api('POST', `/api/projects/${currentProject}/smtp/test`, { to });
+    toast(`Email de test envoyé ✓`, 'success');
+    await loadEmailStatus();
+  } catch (e) {
+    toast(e.message || 'Erreur SMTP', 'error');
+  } finally {
+    btn.textContent = '✉ Tester'; btn.disabled = false;
+  }
+};
+
+document.getElementById('btn-smtp-diagnose').onclick = async () => {
+  const data = smtpFormData();
+  if (!data.host) { toast('Hôte SMTP requis', 'error'); return; }
+  const btn = document.getElementById('btn-smtp-diagnose');
+  const diagEl = document.getElementById('smtp-diag-result');
+  btn.textContent = '…'; btn.disabled = true;
+  diagEl.innerHTML = '<div class="diag-loading">Diagnostic en cours…</div>';
+  try {
+    await api('PUT', `/api/projects/${currentProject}/smtp`, data);
+    const to = document.getElementById('smtp-test-to').value.trim() || data.from_email;
+    const res = await api('POST', `/api/projects/${currentProject}/smtp/diagnose`, { to });
+    diagEl.innerHTML = res.steps.map(s => `
+      <div class="diag-step ${s.ok ? 'ok' : 'fail'}">
+        <span class="diag-icon">${s.ok ? '✓' : '✗'}</span>
+        <span class="diag-name">${s.step}</span>
+        <span class="diag-detail">${s.detail}</span>
+      </div>`).join('');
+  } catch (e) {
+    diagEl.innerHTML = `<div class="diag-step fail"><span class="diag-icon">✗</span><span class="diag-detail">${e.message}</span></div>`;
+  } finally {
+    btn.textContent = '🔍'; btn.disabled = false;
+  }
+};
+
+// Close SMTP modal on backdrop click
+document.getElementById('smtp-backdrop').onclick = (e) => {
+  if (e.target === document.getElementById('smtp-backdrop')) closeSmtpModal();
+};
+
+// STARTTLS / SSL mutual exclusion
+document.getElementById('smtp-tls').onchange = (e) => {
+  if (e.target.checked) document.getElementById('smtp-ssl').checked = false;
+};
+document.getElementById('smtp-ssl').onchange = (e) => {
+  if (e.target.checked) document.getElementById('smtp-tls').checked = false;
+};

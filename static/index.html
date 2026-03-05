@@ -36,6 +36,37 @@
       <div id="file-tree"></div>
     </div>
 
+    <!-- DB section -->
+    <div class="sidebar-section" id="db-section" style="display:none">
+      <div class="sidebar-header">
+        <span>Base de données</span>
+        <div class="sidebar-header-actions">
+          <button id="btn-sync-db" title="Synchroniser le schéma (.lemat → .db)">⚡ Sync</button>
+        </div>
+      </div>
+      <div id="db-tree"></div>
+    </div>
+
+    <!-- Cron section -->
+    <div class="sidebar-section" id="cron-section" style="display:none">
+      <div class="sidebar-header">
+        <span>⏰ Crons</span>
+        <button id="btn-new-cron" title="Nouveau cron job">+</button>
+      </div>
+      <div id="cron-list"></div>
+    </div>
+
+    <!-- Email section -->
+    <div class="sidebar-section" id="email-section" style="display:none">
+      <div class="sidebar-header">
+        <span>✉ Email</span>
+        <div class="sidebar-header-actions">
+          <button id="btn-email-config" title="Configurer SMTP">⚙ Config</button>
+        </div>
+      </div>
+      <div id="email-status"></div>
+    </div>
+
     <input type="file" id="upload-input" multiple style="display:none" />
   </aside>
 
@@ -83,7 +114,7 @@
 
   </main>
 
-  <!-- ── Modal ── -->
+  <!-- ── Modal (simple prompt) ── -->
   <div id="modal-backdrop" class="hidden">
     <div id="modal">
       <div id="modal-title"></div>
@@ -91,6 +122,148 @@
       <div id="modal-actions">
         <button id="modal-cancel">Annuler</button>
         <button id="modal-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Cron Modal ── -->
+  <div id="cron-backdrop" class="hidden">
+    <div id="cron-modal">
+      <div class="smtp-title" id="cron-modal-title">⏰ Nouveau cron job</div>
+
+      <div class="smtp-form">
+        <div class="smtp-row">
+          <label>Nom</label>
+          <input id="cron-name" type="text" placeholder="Ex : Newsletter hebdomadaire" autocomplete="off" />
+        </div>
+        <div class="smtp-row">
+          <label>Script à exécuter</label>
+          <select id="cron-script"></select>
+        </div>
+        <div class="smtp-divider"></div>
+
+        <div class="smtp-row">
+          <label>Planification</label>
+          <select id="cron-sched-type">
+            <option value="daily">Chaque jour à…</option>
+            <option value="weekly">Chaque semaine…</option>
+            <option value="interval">Toutes les N minutes</option>
+            <option value="cron">Expression cron (avancé)</option>
+          </select>
+        </div>
+
+        <!-- daily / weekly params -->
+        <div id="cron-params-time" class="cron-params smtp-row-half">
+          <div id="cron-day-wrap">
+            <label>Jour</label>
+            <select id="cron-sched-day">
+              <option value="mon">Lundi</option>
+              <option value="tue">Mardi</option>
+              <option value="wed">Mercredi</option>
+              <option value="thu">Jeudi</option>
+              <option value="fri">Vendredi</option>
+              <option value="sat">Samedi</option>
+              <option value="sun">Dimanche</option>
+            </select>
+          </div>
+          <div>
+            <label>Heure (UTC)</label>
+            <div style="display:flex;gap:4px;align-items:center">
+              <input id="cron-sched-hour"   type="number" min="0" max="23" value="9"  style="width:52px" />
+              <span style="color:var(--muted)">h</span>
+              <input id="cron-sched-minute" type="number" min="0" max="59" value="0"  style="width:52px" />
+            </div>
+          </div>
+        </div>
+
+        <!-- interval params -->
+        <div id="cron-params-interval" class="cron-params smtp-row" style="display:none">
+          <label>Intervalle (minutes)</label>
+          <input id="cron-sched-minutes" type="number" min="1" max="10080" value="60" />
+        </div>
+
+        <!-- cron expression -->
+        <div id="cron-params-cron" class="cron-params smtp-row" style="display:none">
+          <label>Expression cron (UTC) — min h dom mon dow</label>
+          <input id="cron-sched-expr" type="text" placeholder="0 9 * * 1" autocomplete="off" />
+        </div>
+
+        <div class="smtp-divider"></div>
+        <label class="smtp-check" style="padding:2px 0">
+          <input id="cron-enabled" type="checkbox" checked /> Activer immédiatement
+        </label>
+      </div>
+
+      <div class="smtp-actions">
+        <button id="btn-cron-cancel">Annuler</button>
+        <button id="btn-cron-save" class="primary">Sauvegarder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Cron Logs Modal ── -->
+  <div id="cron-logs-backdrop" class="hidden">
+    <div id="cron-logs-modal">
+      <div class="cron-logs-header">
+        <span id="cron-logs-title">Logs — …</span>
+        <button id="btn-cron-logs-close">✕</button>
+      </div>
+      <div id="cron-logs-body"></div>
+    </div>
+  </div>
+
+  <!-- ── SMTP Modal ── -->
+  <div id="smtp-backdrop" class="hidden">
+    <div id="smtp-modal">
+      <div class="smtp-title">✉ Configuration SMTP</div>
+
+      <div class="smtp-form">
+        <div class="smtp-row">
+          <label>Hôte SMTP</label>
+          <input id="smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" />
+        </div>
+        <div class="smtp-row smtp-row-half">
+          <div>
+            <label>Port</label>
+            <input id="smtp-port" type="number" value="587" min="1" max="65535" />
+          </div>
+          <div class="smtp-toggles">
+            <label class="smtp-check"><input id="smtp-tls" type="checkbox" checked /> STARTTLS</label>
+            <label class="smtp-check"><input id="smtp-ssl" type="checkbox" /> SSL</label>
+          </div>
+        </div>
+        <div class="smtp-row">
+          <label>Utilisateur</label>
+          <input id="smtp-user" type="text" placeholder="user@example.com" autocomplete="off" />
+        </div>
+        <div class="smtp-row">
+          <label>Mot de passe</label>
+          <input id="smtp-pass" type="password" placeholder="••••••••" autocomplete="new-password" />
+        </div>
+        <div class="smtp-divider"></div>
+        <div class="smtp-row">
+          <label>Nom expéditeur</label>
+          <input id="smtp-from-name" type="text" placeholder="Mon App" autocomplete="off" />
+        </div>
+        <div class="smtp-row">
+          <label>Email expéditeur</label>
+          <input id="smtp-from-email" type="email" placeholder="noreply@example.com" autocomplete="off" />
+        </div>
+        <div class="smtp-divider"></div>
+        <div class="smtp-row">
+          <label>Tester vers</label>
+          <div class="smtp-test-row">
+            <input id="smtp-test-to" type="email" placeholder="moi@example.com" autocomplete="off" />
+            <button id="btn-smtp-test">✉ Tester</button>
+            <button id="btn-smtp-diagnose" title="Diagnostic étape par étape">🔍</button>
+          </div>
+        </div>
+        <div id="smtp-diag-result"></div>
+      </div>
+
+      <div class="smtp-actions">
+        <button id="btn-smtp-cancel">Annuler</button>
+        <button id="btn-smtp-save" class="primary">Sauvegarder</button>
       </div>
     </div>
   </div>
