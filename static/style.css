@@ -15,7 +15,8 @@
   --danger:    #dc2626;
   --warn:      #ca8a04;
   --tab-bg:    #e8e8e9;
-  --term-bg:   #18181b;
+  --term-bg:   #f4f4f5;
+  --term-text: #18181b;
   --radius:    4px;
   --sidebar-w: 256px;
 }
@@ -434,12 +435,12 @@ body {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-all;
-  color: #cdd9e5;
+  color: var(--term-text);
 }
 
 .term-cmd      { color: var(--muted); font-style: italic; margin-bottom: 4px; }
-.term-stdout   { color: #cdd9e5; }
-.term-stderr   { color: #ffa657; }
+.term-stdout   { color: var(--text); }
+.term-stderr   { color: var(--danger); }
 .term-error    { color: var(--danger); }
 .term-done-ok  { color: var(--accent2); margin-top: 4px; }
 .term-done-err { color: var(--danger);  margin-top: 4px; }

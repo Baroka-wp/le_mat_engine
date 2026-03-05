@@ -17,8 +17,15 @@ require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0
 
 require(['vs/editor/editor.main'], () => {
   monaco.editor.defineTheme('lemat', {
-    base: 'vs-dark', inherit: true, rules: [],
-    colors: { 'editor.background': '#0f1117' },
+    base: 'vs', inherit: true, rules: [],
+    colors: {
+      'editor.background': '#fafafa',
+      'editor.foreground': '#18181b',
+      'editorLineNumber.foreground': '#a1a1aa',
+      'editorGutter.background': '#f4f4f5',
+      'editor.selectionBackground': '#e4e4e7',
+      'editor.lineHighlightBackground': '#f4f4f5',
+    },
   });
 
   editor = monaco.editor.create(document.getElementById('monaco-container'), {
