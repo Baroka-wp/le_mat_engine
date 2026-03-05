@@ -4,8 +4,12 @@ services:
     image: lemat-platform
     container_name: lemat
     ports:
-      - "80:8000"
+      - "127.0.0.1:8000:8000"   # Accessible en local uniquement → nginx gère 80/443
     volumes:
-      # Persist all project files on the host
       - ./data/projects:/data/projects
+    environment:
+      # Domaine principal de Le Mat (jamais routé vers un projet)
+      - LEMAT_MAIN_DOMAIN=engine.irotoribaroka.com
+      # URL publique de base pour les liens de déploiement
+      - LEMAT_BASE_URL=https://engine.irotoribaroka.com
     restart: unless-stopped

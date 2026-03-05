@@ -44,13 +44,20 @@ def _load_deployments() -> dict:
     """Charge la configuration des déploiements."""
     if DEPLOYMENTS_FILE.exists():
         data = json.loads(DEPLOYMENTS_FILE.read_text())
-        # Migration: s'assurer que le dict "tokens" existe (reverse map token → projet)
+        # Migration: dict "tokens"
         if "tokens" not in data:
             data["tokens"] = {}
             for proj, info in data.get("deployments", {}).items():
                 tok = info.get("token")
                 if tok:
                     data["tokens"][tok] = proj
+        # Migration: dict "domains" (reconstruit depuis custom_domain si absent/incomplet)
+        if "domains" not in data:
+            data["domains"] = {}
+        for proj, info in data.get("deployments", {}).items():
+            domain = info.get("custom_domain")
+            if domain and domain not in data["domains"]:
+                data["domains"][domain] = proj
         return data
     return {"deployments": {}, "domains": {}, "tokens": {}}
 
@@ -82,21 +89,37 @@ app.add_middleware(
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 app.mount("/editor", StaticFiles(directory=STATIC_DIR, html=True), name="editor")
 
+# Domaines réservés à Le Mat lui-même (jamais routés vers un projet)
+_LEMAT_MAIN_DOMAINS: set[str] = {
+    h.strip().lower()
+    for h in os.environ.get("LEMAT_MAIN_DOMAIN", "").split(",")
+    if h.strip()
+}
+
 # ── Custom Domain Routing Middleware ─────────────────────────────────────────
 
 @app.middleware("http")
 async def custom_domain_routing(request, call_next):
-    """Route les requêtes des domaines personnalisés vers les projets."""
-    host = request.headers.get("host", "").split(":")[0].lower()
+    """Route les requêtes des domaines personnalisés vers les projets.
+    Prend en charge les reverse proxies (X-Forwarded-Host) et protège
+    le domaine principal de Le Mat défini via LEMAT_MAIN_DOMAIN."""
 
-    # Chercher dans les domaines personnalisés uniquement
+    # X-Forwarded-Host (nginx/caddy) > Host
+    raw = (
+        request.headers.get("x-forwarded-host") or
+        request.headers.get("host", "")
+    )
+    host = raw.split(":")[0].strip().lower()
+
+    # Le domaine principal de Le Mat ne doit jamais être routé vers un projet
+    if host in _LEMAT_MAIN_DOMAINS:
+        request.state.deploy_project = None
+        return await call_next(request)
+
     deployments = _load_deployments()
     project_name = deployments["domains"].get(host)
 
-    if project_name:
-        request.state.deploy_project = project_name
-    else:
-        request.state.deploy_project = None
+    request.state.deploy_project = project_name
 
     response = await call_next(request)
 
