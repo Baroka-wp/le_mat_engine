@@ -114,6 +114,58 @@ document.getElementById('btn-new-project').onclick = () => {
   });
 };
 
+// ── Export project ────────────────────────────────────────────────────────────
+document.getElementById('btn-export-project').onclick = () => {
+  if (!currentProject) return;
+  const a = document.createElement('a');
+  a.href = `/api/projects/${encodeURIComponent(currentProject)}/export`;
+  a.download = `${currentProject}.zip`;
+  // Must be in the DOM for Firefox/Safari to trigger the download
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  toast(`Export de "${currentProject}" lancé ✓`, 'success');
+};
+
+// ── Import project ────────────────────────────────────────────────────────────
+document.getElementById('btn-import-project').onclick = () => {
+  document.getElementById('import-project-input').value = '';
+  document.getElementById('import-project-input').click();
+};
+
+document.getElementById('import-project-input').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Suggest project name from the filename (strip .zip)
+  const suggested = file.name.replace(/\.zip$/i, '');
+
+  prompt_('Nom du projet à importer', suggested, async (name) => {
+    if (!name) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('name', name);
+
+    try {
+      const resp = await fetch('/api/projects-import', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        toast(err.detail || 'Erreur import', 'error');
+        return;
+      }
+      await loadProjects();
+      await selectProject(name);
+      toast(`Projet "${name}" importé ✓`, 'success');
+    } catch (err) {
+      toast('Erreur import : ' + err.message, 'error');
+    }
+  });
+};
+
 async function selectProject(name) {
   currentProject = name;
   document.querySelectorAll('#project-list li').forEach(li =>
@@ -905,7 +957,7 @@ async function openSmtpModal() {
     document.getElementById('smtp-from-email').value = cfg.from_email || '';
     document.getElementById('smtp-tls').checked      = cfg.tls !== false;
     document.getElementById('smtp-ssl').checked      = !!cfg.ssl;
-    document.getElementById('smtp-test-to').value    = cfg.from_email || '';
+    document.getElementById('smtp-test-to').value    = cfg.test_email || cfg.from_email || '';
   } catch { /* fresh config */ }
 }
 
@@ -923,6 +975,7 @@ function smtpFormData() {
     from_email: document.getElementById('smtp-from-email').value.trim(),
     tls:        document.getElementById('smtp-tls').checked,
     ssl:        document.getElementById('smtp-ssl').checked,
+    test_email: document.getElementById('smtp-test-to').value.trim(),
   };
 }
 
@@ -996,3 +1049,4 @@ document.getElementById('smtp-tls').onchange = (e) => {
 document.getElementById('smtp-ssl').onchange = (e) => {
   if (e.target.checked) document.getElementById('smtp-tls').checked = false;
 };
+

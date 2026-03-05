@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import os
 import shlex
@@ -6,6 +7,7 @@ import shutil
 import smtplib
 import ssl as ssl_lib
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
@@ -292,6 +294,7 @@ class SmtpConfig(BaseModel):
     from_email: str = ""
     tls: bool = True
     ssl: bool = False
+    test_email: str = ""
 
 
 class MailPayload(BaseModel):
@@ -903,6 +906,79 @@ def delete_project(project: str):
         raise HTTPException(404, "Project not found")
     shutil.rmtree(path)
     return {"message": f"Project '{project}' deleted"}
+
+
+# ── Export / Import ───────────────────────────────────────────────────────────
+
+# Files excluded from export (auto-generated or ephemeral)
+_EXPORT_EXCLUDE = {"_lemat_init.py", "_lemat_init.js", "cron_logs.json"}
+
+
+@app.get("/api/projects/{project}/export")
+def export_project(project: str):
+    project_dir = safe_path(project)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(project_dir.rglob("*")):
+            if file_path.is_file() and file_path.name not in _EXPORT_EXCLUDE:
+                arcname = file_path.relative_to(project_dir)
+                zf.write(file_path, arcname)
+
+    filename = f"{project}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# NOTE: URL /api/projects-import (avec tiret) pour éviter le conflit de routage
+# avec POST /api/projects/{project} qui capturerait "/api/projects/import"
+@app.post("/api/projects-import", status_code=201)
+async def import_project(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+):
+    name = name.strip()
+    if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
+        raise HTTPException(400, "Nom de projet invalide")
+
+    project_dir = safe_path(name)
+    if project_dir.exists():
+        raise HTTPException(409, f"Un projet '{name}' existe déjà")
+
+    content = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Fichier invalide — ce n'est pas un ZIP Le Mat")
+
+    # Security: reject any ZIP entry that would escape the project dir (path traversal)
+    project_dir_resolved = str(project_dir.resolve())
+    for member in zf.namelist():
+        dest = (project_dir / member).resolve()
+        if not str(dest).startswith(project_dir_resolved):
+            raise HTTPException(400, "Archive ZIP invalide (path traversal détecté)")
+
+    project_dir.mkdir(parents=True)
+    zf.extractall(project_dir)
+    zf.close()
+
+    # Re-register cron jobs if any
+    crons_file = project_dir / "crons.json"
+    if crons_file.exists():
+        try:
+            crons = json.loads(crons_file.read_text())
+            for job in crons:
+                if job.get("enabled", True):
+                    _register_cron(name, job)
+        except Exception:
+            pass
+
+    return {"project": name, "message": f"Projet '{name}' importé avec succès"}
 
 
 # ── File Tree ─────────────────────────────────────────────────────────────────

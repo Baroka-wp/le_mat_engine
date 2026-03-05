@@ -19,7 +19,10 @@
     <div class="sidebar-section">
       <div class="sidebar-header">
         <span>Projets</span>
-        <button id="btn-new-project" title="Nouveau projet">+</button>
+        <div class="sidebar-header-actions">
+          <button id="btn-import-project" title="Importer un projet (.zip)">📥</button>
+          <button id="btn-new-project"    title="Nouveau projet">+</button>
+        </div>
       </div>
       <ul id="project-list"></ul>
     </div>
@@ -28,9 +31,10 @@
       <div class="sidebar-header">
         <span id="current-project-name">—</span>
         <div class="sidebar-header-actions">
-          <button id="btn-new-file"   title="Nouveau fichier">📄</button>
-          <button id="btn-new-folder" title="Nouveau dossier">📁</button>
-          <button id="btn-upload"     title="Uploader">⬆</button>
+          <button id="btn-export-project" title="Exporter le projet (.zip)">⬇</button>
+          <button id="btn-new-file"       title="Nouveau fichier">📄</button>
+          <button id="btn-new-folder"     title="Nouveau dossier">📁</button>
+          <button id="btn-upload"         title="Uploader des fichiers">⬆</button>
         </div>
       </div>
       <div id="file-tree"></div>
@@ -67,7 +71,8 @@
       <div id="email-status"></div>
     </div>
 
-    <input type="file" id="upload-input" multiple style="display:none" />
+    <input type="file" id="upload-input"         multiple  style="display:none" />
+    <input type="file" id="import-project-input" accept=".zip" style="display:none" />
   </aside>
 
   <!-- ── Main ── -->
