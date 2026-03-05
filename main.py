@@ -910,12 +910,10 @@ def delete_project(project: str):
 
 # ── Export / Import ───────────────────────────────────────────────────────────
 
-# Files excluded from export (auto-generated or ephemeral)
-_EXPORT_EXCLUDE = {"_lemat_init.py", "_lemat_init.js", "cron_logs.json"}
-
 
 @app.get("/api/projects/{project}/export")
 def export_project(project: str):
+    """Exporte l'intégralité du projet (DB, SMTP, crons, logs, etc.)"""
     project_dir = safe_path(project)
     if not project_dir.exists():
         raise HTTPException(404, "Project not found")
@@ -923,7 +921,7 @@ def export_project(project: str):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for file_path in sorted(project_dir.rglob("*")):
-            if file_path.is_file() and file_path.name not in _EXPORT_EXCLUDE:
+            if file_path.is_file():
                 arcname = file_path.relative_to(project_dir)
                 zf.write(file_path, arcname)
 
