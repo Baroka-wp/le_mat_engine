@@ -99,29 +99,63 @@ async function loadDashboard() {
   grid.innerHTML = '';
 
   projects.forEach(p => {
-    const initials = p.name.slice(0, 2).toUpperCase();
+    const avatar = p.icon || '📦';
     const card = document.createElement('div');
     card.className = 'project-card';
     card.innerHTML = `
-      <div class="card-avatar">${initials}</div>
+      <div class="card-top">
+        <div class="card-avatar">${avatar}</div>
+        <div class="card-menu-wrap">
+          <button class="card-menu-btn" title="Options">⋮</button>
+          <div class="card-dropdown hidden">
+            <button class="card-dd-item" data-action="edit">✎ &nbsp;Modifier</button>
+            <button class="card-dd-item danger" data-action="delete">✕ &nbsp;Supprimer</button>
+          </div>
+        </div>
+      </div>
       <div class="card-body">
         <div class="card-name">${p.name}</div>
         <div class="card-desc">${p.description || ''}</div>
       </div>
       <div class="card-footer">
-        <div class="card-actions">
-          <button class="card-btn danger" title="Supprimer">✕</button>
-        </div>
-        <button class="card-open-btn">Ouvrir</button>
+        <button class="card-open-btn">Ouvrir →</button>
       </div>`;
+
+    // Ouvrir
     card.querySelector('.card-open-btn').onclick = (e) => { e.stopPropagation(); openProject(p.name); };
-    card.querySelector('.card-btn.danger').onclick = (e) => {
+    card.addEventListener('dblclick', () => openProject(p.name));
+
+    // Menu ⋮
+    const menuBtn  = card.querySelector('.card-menu-btn');
+    const dropdown = card.querySelector('.card-dropdown');
+    menuBtn.onclick = (e) => {
       e.stopPropagation();
+      // Fermer tous les autres dropdowns
+      document.querySelectorAll('.card-dropdown:not(.hidden)').forEach(d => {
+        if (d !== dropdown) d.classList.add('hidden');
+      });
+      dropdown.classList.toggle('hidden');
+    };
+
+    // Items du dropdown
+    dropdown.querySelector('[data-action="edit"]').onclick = (e) => {
+      e.stopPropagation();
+      dropdown.classList.add('hidden');
+      openEditProjectModal(p);
+    };
+    dropdown.querySelector('[data-action="delete"]').onclick = (e) => {
+      e.stopPropagation();
+      dropdown.classList.add('hidden');
       confirmDelete(`Supprimer le projet "${p.name}" ?`, () => deleteProject(p.name));
     };
-    card.addEventListener('dblclick', () => openProject(p.name));
+
     grid.appendChild(card);
   });
+
+  // Fermer les dropdowns au clic ailleurs
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.card-dropdown:not(.hidden)').forEach(d => d.classList.add('hidden'));
+  }, { once: true });
 
   // Carte "+ Nouveau"
   const addCard = document.createElement('div');
@@ -130,6 +164,54 @@ async function loadDashboard() {
   addCard.onclick = openNewProjectModal;
   grid.appendChild(addCard);
 }
+
+// ── Edit Project Modal ─────────────────────────────────────────────
+let _editingProject = null;
+
+function openEditProjectModal(p) {
+  _editingProject = p;
+  document.getElementById('edit-proj-name').value = p.name;
+  document.getElementById('edit-proj-icon').value = p.icon || '';
+  document.getElementById('edit-proj-desc').value = p.description || '';
+  document.getElementById('edit-proj-backdrop').classList.remove('hidden');
+  setTimeout(() => document.getElementById('edit-proj-name').focus(), 50);
+}
+
+function closeEditProjectModal() {
+  document.getElementById('edit-proj-backdrop').classList.add('hidden');
+  _editingProject = null;
+}
+
+document.getElementById('btn-edit-proj-close').onclick  = closeEditProjectModal;
+document.getElementById('btn-edit-proj-cancel').onclick = closeEditProjectModal;
+document.getElementById('btn-edit-proj-ok').onclick = async () => {
+  if (!_editingProject) return;
+  const oldName = _editingProject.name;
+  const newName = document.getElementById('edit-proj-name').value.trim();
+  const icon    = document.getElementById('edit-proj-icon').value.trim();
+  const desc    = document.getElementById('edit-proj-desc').value.trim();
+  if (!newName) { toast('Le nom est requis', 'error'); return; }
+  try {
+    // 1. Renommer si nécessaire
+    let effectiveName = oldName;
+    if (newName !== oldName) {
+      const r = await fetch(`/api/projects/${encodeURIComponent(oldName)}/rename`,
+        { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: newName }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.statusText);
+      effectiveName = d.project;
+    }
+    // 2. Mettre à jour icon + description
+    await api('PUT', `/api/projects/${encodeURIComponent(effectiveName)}/meta`, { icon, description: desc });
+    closeEditProjectModal();
+    toast(`Projet "${effectiveName}" mis à jour ✓`, 'success');
+    await Promise.all([loadProjects(), loadDashboard()]);
+  } catch(e) { toast(e.message, 'error'); }
+};
+document.getElementById('edit-proj-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-edit-proj-ok').click();
+  if (e.key === 'Escape') closeEditProjectModal();
+});
 
 function openProject(name) {
   currentProject = name;
@@ -175,19 +257,27 @@ document.getElementById('new-proj-name').addEventListener('keydown', e => {
 
 // Bouton dashboard header
 document.getElementById('btn-new-project-dash').onclick = openNewProjectModal;
-document.getElementById('btn-import-project-dash').onclick = () =>
+document.getElementById('btn-import-project-dash').onclick = () => {
+  document.getElementById('import-project-input-dash').value = '';
   document.getElementById('import-project-input-dash').click();
+};
 document.getElementById('import-project-input-dash').onchange = async (e) => {
   const file = e.target.files[0]; if (!file) return;
-  const fd = new FormData(); fd.append('file', file);
-  try {
-    const res = await fetch('/api/projects/import', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail);
-    toast(`Projet importé : ${data.project} ✓`, 'success');
-    await loadDashboard();
+  const suggested = file.name.replace(/\.zip$/i, '');
+  prompt_('Nom du projet à importer', suggested, async (name) => {
+    if (!name) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('name', name);
+    try {
+      const res = await fetch('/api/projects-import', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      toast(`Projet importé : ${data.project} ✓`, 'success');
+      await loadDashboard();
+    } catch(err) { toast(err.message, 'error'); }
     e.target.value = '';
-  } catch(err) { toast(err.message, 'error'); e.target.value = ''; }
+  });
 };
 
 // Bouton retour dans l'éditeur

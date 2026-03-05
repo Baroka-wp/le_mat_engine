@@ -30,14 +30,14 @@ from pydantic import BaseModel
 import model_parser
 import db_engine
 
-BASE_DIR = Path("/data/projects")
+BASE_DIR = Path(os.environ.get("BASE_DIR", "/data/projects"))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Le Mat - Deployment Platform")
 
 # ── Deployments & Custom Domains ──────────────────────────────────────────────
 
-DEPLOYMENTS_FILE = Path("/data/deployments.json")
+DEPLOYMENTS_FILE = BASE_DIR.parent / "deployments.json"
 DEPLOYMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def _load_deployments() -> dict:
@@ -79,7 +79,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/editor", StaticFiles(directory="/app/static", html=True), name="editor")
+STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
+app.mount("/editor", StaticFiles(directory=STATIC_DIR, html=True), name="editor")
 
 # ── Custom Domain Routing Middleware ─────────────────────────────────────────
 
@@ -1010,6 +1011,37 @@ def update_project_meta(project: str, meta: ProjectMeta):
         raise HTTPException(404, "Project not found")
     _meta_path(project).write_text(json.dumps(meta.dict()))
     return meta.dict()
+
+@app.post("/api/projects/{project}/rename")
+def rename_project(project: str, body: dict):
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(400, "Le nom est requis")
+    old_path = safe_path(project)
+    new_path = BASE_DIR / new_name
+    if not old_path.exists():
+        raise HTTPException(404, "Project not found")
+    if new_path.exists() and new_name != project:
+        raise HTTPException(409, "Un projet avec ce nom existe déjà")
+    if new_name != project:
+        old_path.rename(new_path)
+        # Mise à jour des déploiements
+        deps = _load_deployments()
+        changed = False
+        if project in deps.get("deployments", {}):
+            deps["deployments"][new_name] = deps["deployments"].pop(project)
+            changed = True
+        for tok, proj in list(deps.get("tokens", {}).items()):
+            if proj == project:
+                deps["tokens"][tok] = new_name
+                changed = True
+        for domain, proj in list(deps.get("domains", {}).items()):
+            if proj == project:
+                deps["domains"][domain] = new_name
+                changed = True
+        if changed:
+            _save_deployments(deps)
+    return {"project": new_name}
 
 @app.post("/api/projects/{project}", status_code=201)
 def create_project(project: str, meta: Optional[ProjectMeta] = None):

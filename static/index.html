@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Le Mat — Deployment Platform</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 </head>
@@ -17,7 +18,13 @@
         <span class="brand-name">Le Mat</span>
       </div>
       <div class="dash-header-actions">
-        <button id="btn-import-project-dash" class="btn-icon-dash" title="Importer un projet (.zip)">📥</button>
+        <button id="btn-import-project-dash" class="btn-icon-dash" title="Importer un projet (.zip)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </button>
         <button id="btn-new-project-dash" class="btn-accent">+ Nouveau projet</button>
       </div>
     </header>
@@ -484,6 +491,32 @@
 
       <div class="deploy-footer">
         <button id="btn-deploy-cancel">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Edit Project Modal ── -->
+  <div id="edit-proj-backdrop" class="hidden">
+    <div id="edit-proj-modal">
+      <div class="new-proj-header">
+        <span class="new-proj-title">✦ Modifier le projet</span>
+        <button class="new-proj-close" id="btn-edit-proj-close">✕</button>
+      </div>
+      <div class="new-proj-field">
+        <label>Nom du projet *</label>
+        <input id="edit-proj-name" type="text" autocomplete="off" />
+      </div>
+      <div class="new-proj-field">
+        <label>Icône (emoji)</label>
+        <input id="edit-proj-icon" type="text" placeholder="📦" autocomplete="off" maxlength="4" />
+      </div>
+      <div class="new-proj-field">
+        <label>Description</label>
+        <textarea id="edit-proj-desc" placeholder="Une courte description…"></textarea>
+      </div>
+      <div class="new-proj-actions">
+        <button class="btn-ghost" id="btn-edit-proj-cancel">Annuler</button>
+        <button class="btn-accent" id="btn-edit-proj-ok">Sauvegarder</button>
       </div>
     </div>
   </div>
