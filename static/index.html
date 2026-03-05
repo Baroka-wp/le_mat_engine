@@ -31,6 +31,7 @@
       <div class="sidebar-header">
         <span id="current-project-name">—</span>
         <div class="sidebar-header-actions">
+          <button id="btn-deploy-project" title="Déployer le projet">🚀</button>
           <button id="btn-export-project" title="Exporter le projet (.zip)">⬇</button>
           <button id="btn-new-file"       title="Nouveau fichier">📄</button>
           <button id="btn-new-folder"     title="Nouveau dossier">📁</button>
@@ -269,6 +270,165 @@
       <div class="smtp-actions">
         <button id="btn-smtp-cancel">Annuler</button>
         <button id="btn-smtp-save" class="primary">Sauvegarder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Deploy Modal ── -->
+  <div id="deploy-backdrop" class="hidden">
+    <div id="deploy-modal">
+      <div class="deploy-header">
+        <div>
+          <div class="deploy-title">🚀 Déploiement</div>
+          <div class="deploy-subtitle" id="deploy-project-name">—</div>
+        </div>
+        <button id="btn-deploy-close" class="close-btn" title="Fermer">✕</button>
+      </div>
+
+      <div id="deploy-content">
+        <!-- Status: not deployed -->
+        <div id="deploy-not-deployed" class="deploy-state" style="display:none">
+          <div class="deploy-intro">
+            <div class="deploy-icon">🌍</div>
+            <h3>Publiez votre projet</h3>
+            <p>Générez un lien public unique pour partager votre application, hébergée directement sur ce serveur.</p>
+          </div>
+
+          <div class="deploy-features">
+            <div class="feature">
+              <span class="feature-icon">⚡</span>
+              <span>Mise en ligne instantanée</span>
+            </div>
+            <div class="feature">
+              <span class="feature-icon">🔗</span>
+              <span>Lien unique et permanent</span>
+            </div>
+            <div class="feature">
+              <span class="feature-icon">🌐</span>
+              <span>Domaine personnalisé</span>
+            </div>
+            <div class="feature">
+              <span class="feature-icon">🔄</span>
+              <span>Live reload inclus</span>
+            </div>
+          </div>
+
+          <button id="btn-deploy-create" class="btn-deploy-primary">
+            <span class="btn-icon">🚀</span>
+            Publier maintenant
+          </button>
+        </div>
+
+        <!-- Status: deployed -->
+        <div id="deploy-active" class="deploy-state" style="display:none">
+          <div class="deploy-status-bar">
+            <div class="status-left">
+              <span class="status-badge success">● En ligne</span>
+              <span class="deploy-date" id="deploy-date"></span>
+            </div>
+            <button id="btn-deploy-undeploy" class="btn-undeploy" title="Retirer de la publication">
+              <span>🗑</span> Dépublier
+            </button>
+          </div>
+
+          <!-- Lien public -->
+          <div class="deploy-section">
+            <div class="section-header">
+              <label>🔗 Lien public</label>
+              <span class="section-hint">Partagez ce lien pour accéder à votre application</span>
+            </div>
+            <div class="deploy-url-card">
+              <input id="deploy-url" type="text" readonly />
+              <div class="url-actions">
+                <button id="btn-deploy-copy" class="btn-icon-action" title="Copier le lien">📋</button>
+                <a id="btn-deploy-open" href="#" target="_blank" class="btn-icon-action" title="Ouvrir dans un nouvel onglet">↗</a>
+              </div>
+            </div>
+            <p class="deploy-hint">Ce lien est servi directement par Le Mat. Le SDK et le live reload sont automatiquement injectés.</p>
+          </div>
+
+          <!-- Domaine personnalisé -->
+          <div class="deploy-divider"></div>
+
+          <div class="deploy-section">
+            <div class="section-header">
+              <label>🌐 Domaine personnalisé</label>
+              <span class="section-hint">Optionnel — pointez votre propre domaine</span>
+            </div>
+
+            <div id="domain-not-configured" style="display:none">
+              <div class="deploy-domain-row">
+                <input id="custom-domain" type="text" placeholder="app.example.com" />
+                <button id="btn-domain-save" class="btn-primary">Configurer</button>
+              </div>
+              <p class="deploy-hint">Exemple : <code>app.example.com</code> — nécessite de pointer votre DNS vers ce serveur.</p>
+            </div>
+
+            <div id="domain-configured" style="display:none">
+              <div class="domain-card">
+                <div class="domain-header">
+                  <span class="domain-name" id="configured-domain">—</span>
+                  <span class="status-badge" id="domain-status-badge">● En attente</span>
+                </div>
+
+                <div id="dns-pending" style="display:none">
+                  <div class="dns-instructions">
+                    <p>Configurez cet enregistrement DNS chez votre registrar :</p>
+                    <div class="dns-card">
+                      <div class="dns-row">
+                        <span class="dns-label">Type</span>
+                        <span class="dns-value dns-type" id="dns-type">A</span>
+                      </div>
+                      <div class="dns-row">
+                        <span class="dns-label">Nom</span>
+                        <span class="dns-value" id="dns-name">—</span>
+                      </div>
+                      <div class="dns-row">
+                        <span class="dns-label">Valeur / IP cible</span>
+                        <span class="dns-value" id="dns-value">—</span>
+                      </div>
+                      <div class="dns-row">
+                        <span class="dns-label">TTL</span>
+                        <span class="dns-value">3600 (1h)</span>
+                      </div>
+                    </div>
+                    <p class="deploy-hint">La propagation DNS peut prendre jusqu'à 48h.</p>
+                  </div>
+
+                  <div class="dns-actions">
+                    <button id="btn-dns-verify" class="btn-secondary">
+                      <span class="btn-icon">✅</span> J'ai configuré mon DNS — Valider
+                    </button>
+                    <button id="btn-domain-remove" class="btn-text">
+                      <span class="btn-icon">🗑</span> Supprimer le domaine
+                    </button>
+                  </div>
+                </div>
+
+                <div id="dns-verified" style="display:none">
+                  <div class="success-box">
+                    <span class="success-icon">✅</span>
+                    <div>
+                      <div class="success-title">Domaine actif</div>
+                      <div class="success-detail">Votre application est accessible depuis ce domaine.</div>
+                    </div>
+                  </div>
+                  <div class="custom-domain-url">
+                    <input id="custom-domain-url" type="text" readonly />
+                    <a id="btn-custom-open" href="#" target="_blank" class="btn-icon-action" title="Ouvrir">↗</a>
+                  </div>
+                  <button id="btn-domain-remove" class="btn-text" style="margin-top:8px">
+                    <span class="btn-icon">🗑</span> Retirer le domaine
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="deploy-footer">
+        <button id="btn-deploy-cancel">Fermer</button>
       </div>
     </div>
   </div>

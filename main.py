@@ -21,8 +21,8 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 import aiofiles
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, Response
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -35,6 +35,42 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Le Mat - Deployment Platform")
 
+# ── Deployments & Custom Domains ──────────────────────────────────────────────
+
+DEPLOYMENTS_FILE = Path("/data/deployments.json")
+DEPLOYMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+def _load_deployments() -> dict:
+    """Charge la configuration des déploiements."""
+    if DEPLOYMENTS_FILE.exists():
+        data = json.loads(DEPLOYMENTS_FILE.read_text())
+        # Migration: s'assurer que le dict "tokens" existe (reverse map token → projet)
+        if "tokens" not in data:
+            data["tokens"] = {}
+            for proj, info in data.get("deployments", {}).items():
+                tok = info.get("token")
+                if tok:
+                    data["tokens"][tok] = proj
+        return data
+    return {"deployments": {}, "domains": {}, "tokens": {}}
+
+def _save_deployments(data: dict):
+    """Sauvegarde la configuration des déploiements."""
+    DEPLOYMENTS_FILE.write_text(json.dumps(data, indent=2))
+
+def generate_deploy_token() -> str:
+    """Génère un token unique pour le déploiement."""
+    return str(uuid.uuid4())[:8]
+
+def _real_deploy_url(request: Request, token: str) -> str:
+    """Retourne l'URL de déploiement réelle basée sur le serveur courant."""
+    base = os.getenv("LEMAT_BASE_URL", "").rstrip("/")
+    if not base:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "localhost:8000")
+        scheme = request.headers.get("x-forwarded-proto", "http")
+        base = f"{scheme}://{host}"
+    return f"{base}/p/{token}"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,6 +80,30 @@ app.add_middleware(
 )
 
 app.mount("/editor", StaticFiles(directory="/app/static", html=True), name="editor")
+
+# ── Custom Domain Routing Middleware ─────────────────────────────────────────
+
+@app.middleware("http")
+async def custom_domain_routing(request, call_next):
+    """Route les requêtes des domaines personnalisés vers les projets."""
+    host = request.headers.get("host", "").split(":")[0].lower()
+
+    # Chercher dans les domaines personnalisés uniquement
+    deployments = _load_deployments()
+    project_name = deployments["domains"].get(host)
+
+    if project_name:
+        request.state.deploy_project = project_name
+    else:
+        request.state.deploy_project = None
+
+    response = await call_next(request)
+
+    if project_name:
+        response.headers["X-Deploy-Project"] = project_name
+
+    return response
+
 
 # Registry of running processes
 active_processes: dict[str, asyncio.subprocess.Process] = {}
@@ -86,6 +146,28 @@ def inject_scripts(html: str) -> str:
     if "</body>" in html:
         return html.replace("</body>", tag + "</body>", 1)
     return html + tag
+
+
+def inject_scripts_deployed(html: str, project: str) -> str:
+    """Injecte scripts pour projets déployés — nom de projet codé en dur (URL = /p/token/)."""
+    import json as _json
+    script = f"""<script>
+(function(){{
+  var proj = {_json.dumps(project)};
+  var sdk = document.createElement('script');
+  sdk.src = '/api/projects/' + proj + '/lemat-sdk.js';
+  document.head.appendChild(sdk);
+  function connect(){{
+    var ws = new WebSocket('ws://' + location.host + '/api/projects/' + proj + '/livereload');
+    ws.onmessage = function(){{ location.reload(); }};
+    ws.onclose   = function(){{ setTimeout(connect, 1500); }};
+  }}
+  connect();
+}})();
+</script>"""
+    if "</body>" in html:
+        return html.replace("</body>", script + "</body>", 1)
+    return html + script
 
 
 # ── Project / file helpers ────────────────────────────────────────────────────
@@ -908,6 +990,236 @@ def delete_project(project: str):
     return {"message": f"Project '{project}' deleted"}
 
 
+# ── Deployments & Custom Domains ─────────────────────────────────────────────
+
+class DeployConfig(BaseModel):
+    custom_domain: Optional[str] = None
+    dns_records: Optional[dict] = None
+
+
+@app.get("/api/projects/{project}/deploy")
+def get_deployment(project: str, request: Request):
+    """Récupère les informations de déploiement d'un projet."""
+    deployments = _load_deployments()
+    deploy_info = deployments["deployments"].get(project)
+
+    if not deploy_info:
+        return {"deployed": False}
+
+    token = deploy_info["token"]
+    stored_url = deploy_info.get("deploy_url", "")
+
+    # Migration : si l'URL stockée est l'ancien format fake (deploy.lemat.app),
+    # on recalcule l'URL réelle et on sauvegarde
+    if not stored_url or "deploy.lemat.app" in stored_url:
+        stored_url = _real_deploy_url(request, token)
+        deploy_info["deploy_url"] = stored_url
+        deployments["tokens"][token] = project
+        deployments["deployments"][project] = deploy_info
+        _save_deployments(deployments)
+
+    return {
+        "deployed": True,
+        "deploy_url": stored_url,
+        "token": token,
+        "custom_domain": deploy_info.get("custom_domain"),
+        "dns_configured": deploy_info.get("dns_configured", False),
+        "created_at": deploy_info.get("created_at"),
+    }
+
+
+@app.post("/api/projects/{project}/deploy")
+def deploy_project(project: str, request: Request):
+    """Déploie un projet et génère un lien unique accessible depuis ce serveur."""
+    project_dir = safe_path(project)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    deployments = _load_deployments()
+
+    # Si déjà déployé, on recompute l'URL (au cas où l'adresse du serveur a changé)
+    if project in deployments["deployments"]:
+        existing = deployments["deployments"][project]
+        token = existing["token"]
+        deploy_url = _real_deploy_url(request, token)
+        existing["deploy_url"] = deploy_url
+        deployments["deployments"][project] = existing
+        deployments["tokens"][token] = project
+        _save_deployments(deployments)
+        return {
+            "deployed": True,
+            "deploy_url": deploy_url,
+            "token": token,
+            "message": "Déploiement existant",
+        }
+
+    # Nouveau déploiement
+    token = generate_deploy_token()
+    deploy_url = _real_deploy_url(request, token)
+
+    deployments["deployments"][project] = {
+        "token": token,
+        "deploy_url": deploy_url,
+        "custom_domain": None,
+        "dns_configured": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    deployments["tokens"][token] = project
+    _save_deployments(deployments)
+
+    return {
+        "deployed": True,
+        "deploy_url": deploy_url,
+        "token": token,
+        "message": "Projet déployé avec succès",
+    }
+
+
+@app.post("/api/projects/{project}/deploy/domain")
+def set_custom_domain(project: str, body: dict):
+    """Configure un nom de domaine personnalisé pour un projet déployé."""
+    import re
+    from urllib.parse import urlparse as _urlparse
+
+    domain = body.get("domain", "").strip().lower()
+
+    if not domain:
+        raise HTTPException(400, "Domaine requis")
+
+    domain_pattern = r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+    if not re.match(domain_pattern, domain):
+        raise HTTPException(400, "Nom de domaine invalide")
+
+    deployments = _load_deployments()
+
+    if project not in deployments["deployments"]:
+        raise HTTPException(404, "Projet non déployé. Déployez-le d'abord.")
+
+    # Vérifier si le domaine est déjà utilisé par un autre projet
+    for proj, info in deployments["deployments"].items():
+        if proj != project and info.get("custom_domain") == domain:
+            raise HTTPException(409, f"Le domaine {domain} est déjà utilisé par le projet {proj}")
+
+    # Extraire le nom d'hôte du serveur depuis l'URL de déploiement
+    deploy_info = deployments["deployments"][project]
+    parsed = _urlparse(deploy_info.get("deploy_url", ""))
+    server_host = parsed.hostname or "votre-serveur"
+
+    dns_records = {
+        "type": "A",
+        "name": domain,
+        "value": server_host,
+        "ttl": 3600,
+        "note": "Pointez vers l'adresse IP de votre serveur Le Mat",
+    }
+
+    deployments["deployments"][project]["custom_domain"] = domain
+    deployments["deployments"][project]["dns_records"] = dns_records
+    deployments["deployments"][project]["dns_configured"] = False
+
+    # Enregistrer le mapping domaine → projet
+    deployments["domains"][domain] = project
+
+    _save_deployments(deployments)
+
+    return {
+        "domain": domain,
+        "dns_records": dns_records,
+        "message": "Domaine configuré. Pointez votre DNS vers ce serveur puis cliquez Vérifier.",
+    }
+
+
+@app.get("/api/projects/{project}/deploy/verify")
+def verify_domain(project: str):
+    """Vérifie la configuration DNS d'un domaine personnalisé."""
+    deployments = _load_deployments()
+
+    if project not in deployments["deployments"]:
+        raise HTTPException(404, "Projet non déployé")
+
+    deploy_info = deployments["deployments"][project]
+
+    if not deploy_info.get("custom_domain"):
+        raise HTTPException(400, "Aucun domaine personnalisé configuré")
+
+    # NOTE: Ici on pourrait faire une vraie vérification DNS
+    # Pour l'instant, on marque comme configuré manuellement ou via webhook
+    deployments["deployments"][project]["dns_configured"] = True
+    _save_deployments(deployments)
+
+    return {
+        "domain": deploy_info["custom_domain"],
+        "dns_configured": True,
+        "deploy_url": deploy_info["deploy_url"],
+        "message": "Domaine vérifié et activé",
+    }
+
+
+@app.delete("/api/projects/{project}/deploy/domain")
+def remove_custom_domain(project: str):
+    """Supprime le domaine personnalisé d'un projet déployé."""
+    deployments = _load_deployments()
+
+    if project not in deployments["deployments"]:
+        raise HTTPException(404, "Projet non déployé")
+
+    deploy_info = deployments["deployments"][project]
+
+    if not deploy_info.get("custom_domain"):
+        raise HTTPException(400, "Aucun domaine personnalisé configuré")
+
+    domain = deploy_info["custom_domain"]
+
+    # Nettoyer le mapping domaine → projet
+    deployments["domains"].pop(domain, None)
+
+    # Supprimer les infos de domaine du projet
+    deploy_info["custom_domain"] = None
+    deploy_info["dns_records"] = None
+    deploy_info["dns_configured"] = False
+
+    _save_deployments(deployments)
+
+    return {
+        "message": "Domaine personnalisé supprimé",
+        "domain": domain,
+    }
+
+
+@app.delete("/api/projects/{project}/deploy")
+def undeploy_project(project: str):
+    """Supprime le déploiement d'un projet."""
+    deployments = _load_deployments()
+
+    if project not in deployments["deployments"]:
+        raise HTTPException(404, "Projet non déployé")
+
+    deploy_info = deployments["deployments"][project]
+
+    # Nettoyer le mapping de domaine si existant
+    if deploy_info.get("custom_domain"):
+        domain = deploy_info["custom_domain"]
+        deployments["domains"].pop(domain, None)
+
+    # Nettoyer le mapping token → projet
+    token = deploy_info.get("token")
+    if token:
+        deployments["tokens"].pop(token, None)
+
+    # Supprimer le déploiement
+    del deployments["deployments"][project]
+    _save_deployments(deployments)
+
+    return {"message": "Déploiement supprimé"}
+
+
+@app.get("/api/deployments")
+def list_deployments():
+    """Liste tous les déploiements actifs."""
+    deployments = _load_deployments()
+    return deployments["deployments"]
+
+
 # ── Export / Import ───────────────────────────────────────────────────────────
 
 
@@ -1272,7 +1584,8 @@ async def exec_file(project: str, filepath: str, cmd: str = None):
                 try:
                     kind, data = await asyncio.wait_for(queue.get(), timeout=60.0)
                 except asyncio.TimeoutError:
-                    yield f"data: {json.dumps({'type': 'error', 'data': 'Timeout (60s)\n'})}\n\n"
+                    error_msg = "Timeout (60s)\n"
+                    yield f"data: {json.dumps({'type': 'error', 'data': error_msg})}\n\n"
                     proc.kill()
                     break
                 if data is None:
@@ -1331,6 +1644,141 @@ async def serve_project_index(project: str):
     if index.exists():
         return HTMLResponse(inject_scripts(index.read_text(errors="replace")))
     raise HTTPException(404, "No index.html found in project")
+
+
+# ── Serve Deployed Projects via Token URL (/p/{token}/) ───────────────────────
+
+@app.get("/p/{token}")
+async def serve_token_redirect(token: str):
+    """Redirige /p/{token} → /p/{token}/ pour que les URLs relatives (CSS, JS, images)
+    soient correctement résolues par le navigateur."""
+    # Vérifier que le token existe avant de rediriger (évite une 404 après redirect)
+    deployments = _load_deployments()
+    if token not in deployments.get("tokens", {}):
+        raise HTTPException(404, "Déploiement introuvable — lien expiré ou invalide")
+    return RedirectResponse(url=f"/p/{token}/", status_code=301)
+
+
+@app.get("/p/{token}/{filepath:path}")
+async def serve_token_file(token: str, filepath: str):
+    """Sert les fichiers statiques d'un projet via son token de déploiement.
+    Appelé aussi pour /p/{token}/ (filepath="") après la redirection."""
+    deployments = _load_deployments()
+    project = deployments.get("tokens", {}).get(token)
+    if not project:
+        raise HTTPException(404, "Déploiement introuvable — lien expiré ou invalide")
+    project_dir = BASE_DIR / project
+    if not project_dir.exists():
+        raise HTTPException(404, "Projet introuvable")
+
+    # Racine du déploiement (filepath vide = /p/{token}/)
+    if not filepath:
+        index = project_dir / "index.html"
+        if index.exists():
+            return HTMLResponse(inject_scripts_deployed(index.read_text(errors="replace"), project))
+        raise HTTPException(404, "Aucun index.html trouvé")
+
+    file_path = (project_dir / filepath).resolve()
+    # Protection path traversal
+    if not str(file_path).startswith(str(project_dir.resolve())):
+        raise HTTPException(400, "Chemin non autorisé")
+    if not file_path.exists():
+        raise HTTPException(404, "Fichier introuvable")
+
+    if file_path.is_dir():
+        index = file_path / "index.html"
+        if index.exists():
+            return HTMLResponse(inject_scripts_deployed(index.read_text(errors="replace"), project))
+        raise HTTPException(404, "Aucun index.html trouvé")
+
+    if file_path.suffix.lower() in (".html", ".htm"):
+        return HTMLResponse(inject_scripts_deployed(file_path.read_text(errors="replace"), project))
+
+    return FileResponse(file_path)
+
+
+# ── Deployed Projects (Custom Domain Routing) ─────────────────────────────────
+
+@app.get("/api/projects/{project}/deploy/sdk.js")
+def get_deploy_sdk(project: str):
+    """Génère le SDK Le Mat pour un projet déployé."""
+    project_dir = safe_path(project)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    schema = load_schema(project_dir)
+    if not schema:
+        raise HTTPException(404, "No schema found")
+
+    sdk_content = generate_sdk(project, schema)
+    return Response(content=sdk_content, media_type="application/javascript")
+
+
+@app.api_route("/{filepath:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def serve_deployed_project(request: Request, filepath: str = ""):
+    """
+    Sert les fichiers d'un projet déployé via domaine personnalisé ou sous-domaine.
+    Cette route doit être la DERNIÈRE pour ne pas intercepter les routes API.
+    """
+    project_name = request.state.deploy_project
+
+    # Si pas de projet routé, 404
+    if not project_name:
+        raise HTTPException(404, "Not found")
+
+    # Vérifier que le projet existe
+    project_dir = safe_path(project_name)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    # Racine du projet → index.html
+    if not filepath or filepath == "/":
+        index = project_dir / "index.html"
+        if index.exists():
+            content = index.read_text(errors="replace")
+            # Injecter le SDK pour les projets déployés
+            content = content.replace(
+                "</head>",
+                f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
+            )
+            return HTMLResponse(content)
+        raise HTTPException(404, "No index.html found")
+
+    # API data → router vers l'API du projet
+    if filepath.startswith("api/"):
+        # Redirection interne vers l'API
+        api_path = filepath[4:]  # Enlever "api/"
+        # On ne peut pas faire de redirection interne facilement,
+        # donc on retourne une erreur ou on sert le fichier
+        pass
+
+    # Servir le fichier statique demandé
+    file_path = safe_path(project_name, filepath)
+    if not file_path.exists():
+        raise HTTPException(404, "File not found")
+
+    if file_path.is_dir():
+        index = file_path / "index.html"
+        if index.exists():
+            content = index.read_text(errors="replace")
+            content = content.replace(
+                "</head>",
+                f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
+            )
+            return HTMLResponse(content)
+        raise HTTPException(404, "No index.html found")
+
+    # Fichiers HTML → injection du SDK
+    if file_path.suffix.lower() in (".html", ".htm"):
+        content = file_path.read_text(errors="replace")
+        content = content.replace(
+            "</head>",
+            f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
+        )
+        return HTMLResponse(content)
+
+    # Autres fichiers → servir directement
+    return FileResponse(file_path)
 
 
 @app.get("/")

@@ -120,13 +120,255 @@ document.getElementById('btn-export-project').onclick = () => {
   const a = document.createElement('a');
   a.href = `/api/projects/${encodeURIComponent(currentProject)}/export`;
   a.download = `${currentProject}.zip`;
-  // Must be in the DOM for Firefox/Safari to trigger the download
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   toast(`Export de "${currentProject}" lancé ✓`, 'success');
 };
+
+// ── Deploy project ────────────────────────────────────────────────────────────
+document.getElementById('btn-deploy-project').onclick = () => {
+  if (!currentProject) return;
+  openDeployModal();
+};
+
+async function openDeployModal() {
+  document.getElementById('deploy-backdrop').classList.remove('hidden');
+  document.getElementById('deploy-project-name').textContent = currentProject;
+
+  // Event listeners (rebind each time to avoid duplicates via onclick)
+  document.getElementById('btn-deploy-close').onclick = closeDeployModal;
+  document.getElementById('btn-deploy-cancel').onclick = closeDeployModal;
+  document.getElementById('btn-deploy-create').onclick = createDeployment;
+  document.getElementById('btn-deploy-undeploy').onclick = undeployProject;
+  document.getElementById('btn-deploy-copy').onclick = () => copyDeployUrl();
+  document.getElementById('btn-domain-save').onclick = saveCustomDomain;
+  document.getElementById('btn-dns-verify').onclick = verifyDns;
+
+  await loadDeploymentInfo();
+}
+
+function closeDeployModal() {
+  document.getElementById('deploy-backdrop').classList.add('hidden');
+}
+
+async function loadDeploymentInfo() {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`);
+  const data = await res.json();
+
+  if (!data.deployed) {
+    document.getElementById('deploy-not-deployed').style.display = 'block';
+    document.getElementById('deploy-active').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('deploy-not-deployed').style.display = 'none';
+  document.getElementById('deploy-active').style.display = 'block';
+
+  // Lien public
+  document.getElementById('deploy-url').value = data.deploy_url;
+  const openBtn = document.getElementById('btn-deploy-open');
+  if (openBtn) openBtn.href = data.deploy_url;
+
+  // Date de mise en ligne
+  if (data.created_at) {
+    const date = new Date(data.created_at);
+    document.getElementById('deploy-date').textContent =
+      'Publié le ' + date.toLocaleDateString('fr-FR', {
+        day: 'numeric', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+  }
+
+  // Domaine personnalisé
+  const domainNotConfigured = document.getElementById('domain-not-configured');
+  const domainConfigured = document.getElementById('domain-configured');
+  const dnsPending = document.getElementById('dns-pending');
+  const dnsVerified = document.getElementById('dns-verified');
+
+  if (data.custom_domain) {
+    domainNotConfigured.style.display = 'none';
+    domainConfigured.style.display = 'block';
+    document.getElementById('configured-domain').textContent = data.custom_domain;
+
+    // Re-bind remove button (may appear in two places)
+    document.querySelectorAll('#btn-domain-remove').forEach(btn => {
+      btn.onclick = removeCustomDomain;
+    });
+
+    if (data.dns_configured) {
+      dnsPending.style.display = 'none';
+      dnsVerified.style.display = 'block';
+      document.getElementById('domain-status-badge').className = 'status-badge success';
+      document.getElementById('domain-status-badge').textContent = '● Actif';
+      const customUrl = `https://${data.custom_domain}`;
+      document.getElementById('custom-domain-url').value = customUrl;
+      document.getElementById('btn-custom-open').href = customUrl;
+    } else {
+      dnsPending.style.display = 'block';
+      dnsVerified.style.display = 'none';
+      document.getElementById('domain-status-badge').className = 'status-badge pending';
+      document.getElementById('domain-status-badge').textContent = '● En attente DNS';
+      // Remplir les infos DNS (type A — pointer l'IP du serveur)
+      const dnsTypeEl = document.getElementById('dns-type');
+      if (dnsTypeEl) dnsTypeEl.textContent = 'A';
+      document.getElementById('dns-name').textContent = data.custom_domain;
+      // Extraire l'hostname du serveur depuis l'URL de déploiement
+      try {
+        const serverHost = new URL(data.deploy_url).hostname;
+        document.getElementById('dns-value').textContent = serverHost;
+      } catch {
+        document.getElementById('dns-value').textContent = window.location.hostname;
+      }
+    }
+  } else {
+    domainNotConfigured.style.display = 'block';
+    domainConfigured.style.display = 'none';
+  }
+}
+
+async function createDeployment() {
+  const btn = document.getElementById('btn-deploy-create');
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-icon">⏳</span> Publication en cours...';
+
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`, { method: 'POST' });
+    const data = await res.json();
+
+    if (res.ok) {
+      toast('Projet publié ! Lien généré ✓', 'success');
+      await loadDeploymentInfo();
+    } else {
+      toast(`Erreur : ${data.message || data.detail}`, 'error');
+    }
+  } catch (err) {
+    toast(`Erreur : ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+async function undeployProject() {
+  if (!confirm('⚠️ Dépublier ce projet ?\n\nLe lien ne sera plus accessible.')) return;
+
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`, { method: 'DELETE' });
+    const data = await res.json();
+
+    if (res.ok) {
+      toast('Projet dépublié', 'success');
+      await loadDeploymentInfo();
+    } else {
+      toast(`Erreur : ${data.message || data.detail}`, 'error');
+    }
+  } catch (err) {
+    toast(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+async function saveCustomDomain() {
+  const domain = document.getElementById('custom-domain').value.trim().toLowerCase();
+
+  if (!domain) { toast('Veuillez entrer un domaine', 'error'); return; }
+
+  const domainRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+  if (!domainRegex.test(domain)) { toast('Nom de domaine invalide', 'error'); return; }
+
+  const btn = document.getElementById('btn-domain-save');
+  btn.disabled = true;
+  btn.textContent = 'Configuration...';
+
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      toast('Domaine configuré !', 'success');
+      await loadDeploymentInfo();
+    } else {
+      toast(`Erreur : ${data.message || data.detail}`, 'error');
+    }
+  } catch (err) {
+    toast(`Erreur : ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Configurer';
+  }
+}
+
+async function removeCustomDomain() {
+  if (!confirm('Retirer ce domaine personnalisé ?')) return;
+
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`, { method: 'DELETE' });
+    const data = await res.json();
+
+    if (res.ok) {
+      toast('Domaine retiré', 'success');
+      await loadDeploymentInfo();
+    } else {
+      toast(`Erreur : ${data.message || data.detail}`, 'error');
+    }
+  } catch (err) {
+    toast(`Erreur : ${err.message}`, 'error');
+  }
+}
+
+async function verifyDns() {
+  const btn = document.getElementById('btn-dns-verify');
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-icon">⏳</span> Validation...';
+
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/verify`);
+    const data = await res.json();
+
+    if (res.ok) {
+      toast('Domaine validé et actif !', 'success');
+      await loadDeploymentInfo();
+    } else {
+      toast(`Erreur : ${data.message || data.detail}`, 'error');
+    }
+  } catch (err) {
+    toast(`Erreur : ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+function copyDeployUrl() {
+  const input = document.getElementById('deploy-url');
+  if (!input) return;
+  navigator.clipboard.writeText(input.value).then(() => {
+    toast('Lien copié !', 'success');
+  }).catch(() => {
+    input.select();
+    document.execCommand('copy');
+    toast('Lien copié !', 'success');
+  });
+}
+
+function copyToClipboard(elementId) {
+  const input = document.getElementById(elementId);
+  if (!input) return;
+  navigator.clipboard.writeText(input.value).then(() => {
+    toast('Copié !', 'success');
+  }).catch(() => {
+    input.select();
+    document.execCommand('copy');
+    toast('Copié !', 'success');
+  });
+}
 
 // ── Import project ────────────────────────────────────────────────────────────
 document.getElementById('btn-import-project').onclick = () => {
