@@ -44,6 +44,7 @@ require(['vs/editor/editor.main'], () => {
 // ── Init ─────────────────────────────────────────────────────────────
 async function init() {
   await loadProjects();
+  showDashboard(); // Démarrer sur le dashboard
   setupResizeHandle();
   document.getElementById('btn-run').onclick        = () => runCurrentFile();
   document.getElementById('btn-stop').onclick       = () => stopRun();
@@ -72,47 +73,173 @@ async function api(method, path, body) {
   return res.json().catch(() => null);
 }
 
-// ── Projects ─────────────────────────────────────────────────────────
+// ── Navigation Dashboard / Éditeur ───────────────────────────────────
+function showDashboard() {
+  document.getElementById('view-dashboard').style.display = 'flex';
+  document.getElementById('view-editor').style.display = 'none';
+  loadDashboard();
+}
+
+function showEditor() {
+  document.getElementById('view-dashboard').style.display = 'none';
+  document.getElementById('view-editor').style.display = 'flex';
+}
+
+// ── Dashboard — grille de projets ────────────────────────────────────
+const ICONS = ['📦','🚀','🌐','📱','🛍️','📊','🎨','⚡','🔧','📝','💡','🎯','🔐','🤖','🌿','💎','🏆','🔬','🎵','📸','🧩','💼','🏗️','🌟'];
+let selectedIcon = ICONS[0];
+
+async function loadDashboard() {
+  const projects = await api('GET', '/api/projects').catch(() => []);
+  const grid = document.getElementById('projects-grid');
+  grid.innerHTML = '';
+
+  projects.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'project-card';
+    card.innerHTML = `
+      <div class="card-icon">${p.icon || '📦'}</div>
+      <div class="card-body">
+        <div class="card-name">${p.name}</div>
+        <div class="card-desc">${p.description || '<span style="opacity:.5">Aucune description</span>'}</div>
+      </div>
+      <div class="card-footer">
+        <div class="card-actions">
+          <button class="card-btn danger" title="Supprimer">🗑</button>
+        </div>
+        <button class="card-open-btn">Ouvrir →</button>
+      </div>`;
+    card.querySelector('.card-open-btn').onclick = (e) => { e.stopPropagation(); openProject(p.name); };
+    card.querySelector('.card-btn.danger').onclick = (e) => {
+      e.stopPropagation();
+      confirmDelete(`Supprimer le projet "${p.name}" ?`, () => deleteProject(p.name));
+    };
+    card.addEventListener('dblclick', () => openProject(p.name));
+    grid.appendChild(card);
+  });
+
+  // Carte "+ Nouveau"
+  const addCard = document.createElement('div');
+  addCard.className = 'project-card-new';
+  addCard.innerHTML = `<div class="new-icon">+</div><span>Nouveau projet</span>`;
+  addCard.onclick = openNewProjectModal;
+  grid.appendChild(addCard);
+}
+
+function openProject(name) {
+  currentProject = name;
+  showEditor();
+  document.getElementById('current-project-name').textContent = name;
+  document.getElementById('filetree-section').style.display = 'flex';
+  document.getElementById('email-section').style.display = 'flex';
+  Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection()]);
+  // Sync sidebar list
+  document.querySelectorAll('#project-list li').forEach(li =>
+    li.classList.toggle('active', li.dataset.name === name));
+}
+
+// ── Nouveau projet modal ──────────────────────────────────────────────
+function openNewProjectModal() {
+  selectedIcon = ICONS[0];
+  // Build icon grid
+  const grid = document.getElementById('icon-grid');
+  grid.innerHTML = '';
+  ICONS.forEach(ic => {
+    const btn = document.createElement('button');
+    btn.className = 'icon-opt' + (ic === selectedIcon ? ' selected' : '');
+    btn.textContent = ic;
+    btn.onclick = () => {
+      selectedIcon = ic;
+      grid.querySelectorAll('.icon-opt').forEach(b => b.classList.toggle('selected', b.textContent === ic));
+    };
+    grid.appendChild(btn);
+  });
+  document.getElementById('new-proj-name').value = '';
+  document.getElementById('new-proj-desc').value = '';
+  document.getElementById('new-proj-backdrop').classList.remove('hidden');
+  setTimeout(() => document.getElementById('new-proj-name').focus(), 50);
+}
+
+function closeNewProjectModal() {
+  document.getElementById('new-proj-backdrop').classList.add('hidden');
+}
+
+document.getElementById('btn-new-proj-close').onclick = closeNewProjectModal;
+document.getElementById('btn-new-proj-cancel').onclick = closeNewProjectModal;
+document.getElementById('btn-new-proj-ok').onclick = async () => {
+  const name = document.getElementById('new-proj-name').value.trim();
+  const description = document.getElementById('new-proj-desc').value.trim();
+  if (!name) { toast('Le nom est requis', 'error'); return; }
+  try {
+    await api('POST', `/api/projects/${encodeURIComponent(name)}`,
+      { description, icon: selectedIcon });
+    closeNewProjectModal();
+    toast(`Projet "${name}" créé ✓`, 'success');
+    await loadProjects(); // sync sidebar list
+    openProject(name);
+  } catch(e) { toast(e.message, 'error'); }
+};
+document.getElementById('new-proj-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-new-proj-ok').click();
+});
+
+// Bouton dashboard header
+document.getElementById('btn-new-project-dash').onclick = openNewProjectModal;
+document.getElementById('btn-import-project-dash').onclick = () =>
+  document.getElementById('import-project-input-dash').click();
+document.getElementById('import-project-input-dash').onchange = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const res = await fetch('/api/projects/import', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail);
+    toast(`Projet importé : ${data.project} ✓`, 'success');
+    await loadDashboard();
+    e.target.value = '';
+  } catch(err) { toast(err.message, 'error'); e.target.value = ''; }
+};
+
+// Bouton retour dans l'éditeur
+document.getElementById('btn-back-dashboard').onclick = () => showDashboard();
+
+// ── Projects (sidebar list sync) ──────────────────────────────────────
 async function loadProjects() {
-  const projects = await api('GET', '/api/projects');
+  const projects = await api('GET', '/api/projects').catch(() => []);
   const ul = document.getElementById('project-list');
   ul.innerHTML = '';
-  projects.forEach(name => {
+  projects.forEach(p => {
     const li = document.createElement('li');
-    li.dataset.name = name;
+    li.dataset.name = p.name;
     li.innerHTML = `
-      <span class="project-name">📦 ${name}</span>
+      <span class="project-name">${p.icon || '📦'} ${p.name}</span>
       <button class="btn-delete-project" title="Supprimer">🗑</button>`;
-    li.querySelector('.project-name').onclick = () => selectProject(name);
-    li.querySelector('.btn-delete-project').onclick = (e) => {
-      e.stopPropagation();
-      confirmDelete(`Supprimer le projet "${name}" ?`, () => deleteProject(name));
+    li.querySelector('.project-name').onclick = () => openProject(p.name);
+    li.querySelector('.btn-delete-project').onclick = (ev) => {
+      ev.stopPropagation();
+      confirmDelete(`Supprimer le projet "${p.name}" ?`, () => deleteProject(p.name));
     };
-    if (name === currentProject) li.classList.add('active');
+    if (p.name === currentProject) li.classList.add('active');
     ul.appendChild(li);
   });
 }
 
 async function deleteProject(name) {
-  await api('DELETE', `/api/projects/${name}`);
+  await api('DELETE', `/api/projects/${encodeURIComponent(name)}`);
   if (currentProject === name) {
     currentProject = null; tabs = []; activeTab = null;
     renderTabs(); showWelcome();
     document.getElementById('filetree-section').style.display = 'none';
+    document.getElementById('email-section').style.display = 'none';
+    showDashboard();
+  } else {
+    loadDashboard();
   }
   await loadProjects();
   toast('Projet supprimé', 'success');
 }
 
-document.getElementById('btn-new-project').onclick = () => {
-  prompt_('Nom du nouveau projet', '', async (name) => {
-    if (!name) return;
-    await api('POST', `/api/projects/${name}`);
-    await loadProjects();
-    selectProject(name);
-    toast(`Projet "${name}" créé`, 'success');
-  });
-};
+document.getElementById('btn-new-project').onclick = openNewProjectModal;
 
 // ── Export project ────────────────────────────────────────────────────────────
 document.getElementById('btn-export-project').onclick = () => {
@@ -464,13 +591,7 @@ document.getElementById('import-project-input').onchange = async (e) => {
 };
 
 async function selectProject(name) {
-  currentProject = name;
-  document.querySelectorAll('#project-list li').forEach(li =>
-    li.classList.toggle('active', li.dataset.name === name));
-  document.getElementById('current-project-name').textContent = name;
-  document.getElementById('filetree-section').style.display = 'flex';
-  document.getElementById('email-section').style.display = 'flex';
-  await Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection()]);
+  openProject(name);
 }
 
 // ── File tree ─────────────────────────────────────────────────────────

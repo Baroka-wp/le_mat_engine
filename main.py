@@ -185,7 +185,7 @@ def safe_path(project: str, filepath: str = "") -> Path:
 HIDDEN_SUFFIXES = {
     ".db-shm", ".db-wal", ".DS_Store",
     "smtp.json", "crons.json", "cron_logs.json",
-    "_lemat_init.py", "_lemat_init.js",
+    "_lemat_init.py", "_lemat_init.js", "_meta.json",
 }
 
 _smtp_executor = ThreadPoolExecutor(max_workers=4)
@@ -967,17 +967,58 @@ async def livereload_ws(project: str, ws: WebSocket):
 
 # ── Projects ──────────────────────────────────────────────────────────────────
 
-@app.get("/api/projects", response_model=List[str])
-def list_projects():
-    return [d.name for d in sorted(BASE_DIR.iterdir()) if d.is_dir()]
+class ProjectMeta(BaseModel):
+    description: str = ""
+    icon: str = "📦"
 
+def _meta_path(project: str) -> Path:
+    return safe_path(project) / "_meta.json"
+
+def _load_meta(project: str) -> dict:
+    path = _meta_path(project)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return {"description": "", "icon": "📦"}
+
+@app.get("/api/projects")
+def list_projects():
+    if not BASE_DIR.exists():
+        return []
+    result = []
+    for d in sorted(BASE_DIR.iterdir()):
+        if d.is_dir():
+            meta = _load_meta(d.name)
+            result.append({
+                "name": d.name,
+                "description": meta.get("description", ""),
+                "icon": meta.get("icon", "📦"),
+            })
+    return result
+
+@app.get("/api/projects/{project}/meta")
+def get_project_meta(project: str):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    return _load_meta(project)
+
+@app.put("/api/projects/{project}/meta")
+def update_project_meta(project: str, meta: ProjectMeta):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    _meta_path(project).write_text(json.dumps(meta.dict()))
+    return meta.dict()
 
 @app.post("/api/projects/{project}", status_code=201)
-def create_project(project: str):
+def create_project(project: str, meta: Optional[ProjectMeta] = None):
     path = safe_path(project)
     if path.exists():
         raise HTTPException(409, "Project already exists")
     path.mkdir(parents=True)
+    if meta:
+        _meta_path(project).write_text(json.dumps(meta.dict()))
     return {"message": f"Project '{project}' created"}
 
 

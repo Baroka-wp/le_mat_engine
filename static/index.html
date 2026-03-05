@@ -9,9 +9,31 @@
 </head>
 <body>
 
+  <!-- ══ DASHBOARD VIEW ══ -->
+  <div id="view-dashboard">
+    <header class="dash-header">
+      <div class="dash-brand">
+        <span class="brand-icon">♟</span>
+        <span class="brand-name">Le Mat</span>
+      </div>
+      <div class="dash-header-actions">
+        <button id="btn-import-project-dash" class="btn-icon-dash" title="Importer un projet (.zip)">📥</button>
+        <button id="btn-new-project-dash" class="btn-accent">+ Nouveau projet</button>
+      </div>
+    </header>
+    <main class="dash-main">
+      <div class="dash-section-title">Mes projets</div>
+      <div id="projects-grid"></div>
+    </main>
+  </div>
+
+  <!-- ══ EDITOR VIEW ══ -->
+  <div id="view-editor" style="display:none">
+
   <!-- ── Sidebar ── -->
   <aside id="sidebar">
     <div id="brand">
+      <button id="btn-back-dashboard" title="Retour aux projets">←</button>
       <span class="brand-icon">♟</span>
       <span class="brand-name">Le Mat</span>
     </div>
@@ -74,6 +96,7 @@
 
     <input type="file" id="upload-input"         multiple  style="display:none" />
     <input type="file" id="import-project-input" accept=".zip" style="display:none" />
+    <input type="file" id="import-project-input-dash" accept=".zip" style="display:none" />
   </aside>
 
   <!-- ── Main ── -->
@@ -119,6 +142,32 @@
     </div>
 
   </main>
+
+  </div><!-- #view-editor -->
+
+  <!-- ══ NOUVEAU PROJET MODAL ══ -->
+  <div id="new-proj-backdrop" class="hidden">
+    <div id="new-proj-modal">
+      <div class="new-proj-header">
+        <span class="new-proj-title">✦ Nouveau projet</span>
+        <button class="new-proj-close" id="btn-new-proj-close">✕</button>
+      </div>
+      <div class="icon-picker-label">Icône</div>
+      <div class="icon-grid" id="icon-grid"></div>
+      <div class="new-proj-field">
+        <label>Nom du projet *</label>
+        <input id="new-proj-name" type="text" placeholder="mon-projet" autocomplete="off" />
+      </div>
+      <div class="new-proj-field">
+        <label>Description</label>
+        <textarea id="new-proj-desc" placeholder="Une courte description…"></textarea>
+      </div>
+      <div class="new-proj-actions">
+        <button class="btn-ghost" id="btn-new-proj-cancel">Annuler</button>
+        <button class="btn-accent" id="btn-new-proj-ok">Créer le projet</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Modal (simple prompt) ── -->
   <div id="modal-backdrop" class="hidden">
