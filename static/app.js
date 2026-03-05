@@ -153,6 +153,26 @@ function closeDeployModal() {
   document.getElementById('deploy-backdrop').classList.add('hidden');
 }
 
+function _applyDnsTab(type) {
+  const typeEl   = document.getElementById('dns-type');
+  const valueEl  = document.getElementById('dns-value');
+  const labelEl  = document.getElementById('dns-value-label');
+  const hintEl   = document.getElementById('dns-hint-text');
+  if (!typeEl) return;
+
+  if (type === 'CNAME') {
+    typeEl.textContent  = 'CNAME';
+    valueEl.textContent = window._dnsCnameValue || '—';
+    labelEl.textContent = 'Valeur / Cible (CNAME)';
+    if (hintEl) hintEl.textContent = 'Utilisez CNAME pour un sous-domaine (ex: app.example.com). La propagation DNS peut prendre jusqu\'à 48h.';
+  } else {
+    typeEl.textContent  = 'A';
+    valueEl.textContent = window._dnsAValue || '—';
+    labelEl.textContent = 'Valeur / IP cible';
+    if (hintEl) hintEl.textContent = 'Utilisez un enregistrement A pour un domaine racine (ex: example.com). La propagation DNS peut prendre jusqu\'à 48h.';
+  }
+}
+
 async function loadDeploymentInfo() {
   const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`);
   const data = await res.json();
@@ -210,17 +230,25 @@ async function loadDeploymentInfo() {
       dnsVerified.style.display = 'none';
       document.getElementById('domain-status-badge').className = 'status-badge pending';
       document.getElementById('domain-status-badge').textContent = '● En attente DNS';
-      // Remplir les infos DNS (type A — pointer l'IP du serveur)
-      const dnsTypeEl = document.getElementById('dns-type');
-      if (dnsTypeEl) dnsTypeEl.textContent = 'A';
+      // Remplir les infos DNS (A et CNAME)
+      let serverHost = window.location.hostname;
+      try { serverHost = new URL(data.deploy_url).hostname; } catch {}
+
       document.getElementById('dns-name').textContent = data.custom_domain;
-      // Extraire l'hostname du serveur depuis l'URL de déploiement
-      try {
-        const serverHost = new URL(data.deploy_url).hostname;
-        document.getElementById('dns-value').textContent = serverHost;
-      } catch {
-        document.getElementById('dns-value').textContent = window.location.hostname;
-      }
+      window._dnsAValue = serverHost;
+      window._dnsCnameValue = serverHost;
+
+      // Afficher A par défaut
+      _applyDnsTab('A');
+
+      // Onglets A / CNAME
+      document.querySelectorAll('.dns-tab').forEach(tab => {
+        tab.onclick = () => {
+          document.querySelectorAll('.dns-tab').forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          _applyDnsTab(tab.dataset.dns);
+        };
+      });
     }
   } else {
     domainNotConfigured.style.display = 'block';

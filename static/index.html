@@ -374,6 +374,14 @@
                 <div id="dns-pending" style="display:none">
                   <div class="dns-instructions">
                     <p>Configurez cet enregistrement DNS chez votre registrar :</p>
+                    <div class="dns-tabs">
+                      <button class="dns-tab active" data-dns="A">
+                        <span>A</span> Domaine racine
+                      </button>
+                      <button class="dns-tab" data-dns="CNAME">
+                        <span>CNAME</span> Sous-domaine
+                      </button>
+                    </div>
                     <div class="dns-card">
                       <div class="dns-row">
                         <span class="dns-label">Type</span>
@@ -384,7 +392,7 @@
                         <span class="dns-value" id="dns-name">—</span>
                       </div>
                       <div class="dns-row">
-                        <span class="dns-label">Valeur / IP cible</span>
+                        <span class="dns-label" id="dns-value-label">Valeur / IP cible</span>
                         <span class="dns-value" id="dns-value">—</span>
                       </div>
                       <div class="dns-row">
@@ -392,7 +400,7 @@
                         <span class="dns-value">3600 (1h)</span>
                       </div>
                     </div>
-                    <p class="deploy-hint">La propagation DNS peut prendre jusqu'à 48h.</p>
+                    <p class="deploy-hint" id="dns-hint-text">La propagation DNS peut prendre jusqu'à 48h.</p>
                   </div>
 
                   <div class="dns-actions">
