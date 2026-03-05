@@ -86,28 +86,26 @@ function showEditor() {
 }
 
 // ── Dashboard — grille de projets ────────────────────────────────────
-const ICONS = ['📦','🚀','🌐','📱','🛍️','📊','🎨','⚡','🔧','📝','💡','🎯','🔐','🤖','🌿','💎','🏆','🔬','🎵','📸','🧩','💼','🏗️','🌟'];
-let selectedIcon = ICONS[0];
-
 async function loadDashboard() {
   const projects = await api('GET', '/api/projects').catch(() => []);
   const grid = document.getElementById('projects-grid');
   grid.innerHTML = '';
 
   projects.forEach(p => {
+    const initials = p.name.slice(0, 2).toUpperCase();
     const card = document.createElement('div');
     card.className = 'project-card';
     card.innerHTML = `
-      <div class="card-icon">${p.icon || '📦'}</div>
+      <div class="card-avatar">${initials}</div>
       <div class="card-body">
         <div class="card-name">${p.name}</div>
-        <div class="card-desc">${p.description || '<span style="opacity:.5">Aucune description</span>'}</div>
+        <div class="card-desc">${p.description || ''}</div>
       </div>
       <div class="card-footer">
         <div class="card-actions">
-          <button class="card-btn danger" title="Supprimer">🗑</button>
+          <button class="card-btn danger" title="Supprimer">✕</button>
         </div>
-        <button class="card-open-btn">Ouvrir →</button>
+        <button class="card-open-btn">Ouvrir</button>
       </div>`;
     card.querySelector('.card-open-btn').onclick = (e) => { e.stopPropagation(); openProject(p.name); };
     card.querySelector('.card-btn.danger').onclick = (e) => {
@@ -133,27 +131,12 @@ function openProject(name) {
   document.getElementById('filetree-section').style.display = 'flex';
   document.getElementById('email-section').style.display = 'flex';
   Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection()]);
-  // Sync sidebar list
   document.querySelectorAll('#project-list li').forEach(li =>
     li.classList.toggle('active', li.dataset.name === name));
 }
 
 // ── Nouveau projet modal ──────────────────────────────────────────────
 function openNewProjectModal() {
-  selectedIcon = ICONS[0];
-  // Build icon grid
-  const grid = document.getElementById('icon-grid');
-  grid.innerHTML = '';
-  ICONS.forEach(ic => {
-    const btn = document.createElement('button');
-    btn.className = 'icon-opt' + (ic === selectedIcon ? ' selected' : '');
-    btn.textContent = ic;
-    btn.onclick = () => {
-      selectedIcon = ic;
-      grid.querySelectorAll('.icon-opt').forEach(b => b.classList.toggle('selected', b.textContent === ic));
-    };
-    grid.appendChild(btn);
-  });
   document.getElementById('new-proj-name').value = '';
   document.getElementById('new-proj-desc').value = '';
   document.getElementById('new-proj-backdrop').classList.remove('hidden');
@@ -172,7 +155,7 @@ document.getElementById('btn-new-proj-ok').onclick = async () => {
   if (!name) { toast('Le nom est requis', 'error'); return; }
   try {
     await api('POST', `/api/projects/${encodeURIComponent(name)}`,
-      { description, icon: selectedIcon });
+      { description, icon: '' });
     closeNewProjectModal();
     toast(`Projet "${name}" créé ✓`, 'success');
     await loadProjects(); // sync sidebar list
