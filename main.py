@@ -1714,6 +1714,8 @@ def get_deploy_sdk(project: str):
     return Response(content=sdk_content, media_type="application/javascript")
 
 
+
+
 @app.api_route("/{filepath:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def serve_deployed_project(request: Request, filepath: str = ""):
     """
