@@ -1724,8 +1724,10 @@ async def serve_deployed_project(request: Request, filepath: str = ""):
     """
     project_name = request.state.deploy_project
 
-    # Si pas de projet routé, 404
+    # Si pas de projet routé → rediriger vers l'éditeur (ou 404 si filepath spécifique)
     if not project_name:
+        if not filepath:
+            return RedirectResponse(url="/editor/", status_code=302)
         raise HTTPException(404, "Not found")
 
     # Vérifier que le projet existe
