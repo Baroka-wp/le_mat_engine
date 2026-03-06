@@ -197,10 +197,12 @@ class ProjectRuntime:
 
     def resolve_path(self, filepath: str) -> Path:
         """
-        Résout un chemin relatif dans le répertoire statique du projet.
+        Résout un chemin relatif dans le répertoire du projet (project_dir).
+        Permet d'accéder à tous les fichiers du projet (schema.lemat, config.lemat,
+        static/, logic/, pages/, data/…).
         Lève ValueError si le chemin tente de sortir du projet (path traversal).
         """
-        resolved = (self.static_dir / filepath).resolve()
+        resolved = (self.project_dir / filepath).resolve()
         if not str(resolved).startswith(str(self.project_dir.resolve())):
             raise ValueError(f"Path traversal not allowed: {filepath!r}")
         return resolved

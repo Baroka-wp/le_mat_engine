@@ -70,6 +70,10 @@ def smart_migrate(db_path: Path, schema: "model_parser.SchemaDef") -> dict:
         }
 
         for model in schema.models:
+            # Skip empty models (no fields) — would generate invalid SQL
+            if not model.fields:
+                continue
+
             table_sql = mp._model_to_sql(model)
 
             if model.name not in existing_tables:

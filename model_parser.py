@@ -217,13 +217,17 @@ class SchemaDef:
 def parse(source: str) -> SchemaDef:
     schema = SchemaDef()
 
+    # Strip single-line comments (// ...) before parsing to avoid
+    # matching commented-out model blocks
+    cleaned = re.sub(r'//[^\n]*', '', source)
+
     # database "file.db"
-    m = re.search(r'^\s*database\s+"([^"]+)"', source, re.MULTILINE)
+    m = re.search(r'^\s*database\s+"([^"]+)"', cleaned, re.MULTILINE)
     if m:
         schema.database = m.group(1)
 
     # model ModelName { ... }
-    for mm in re.finditer(r"model\s+(\w+)\s*\{([^}]*)\}", source, re.DOTALL):
+    for mm in re.finditer(r"model\s+(\w+)\s*\{([^}]*)\}", cleaned, re.DOTALL):
         model = ModelDef(name=mm.group(1))
         for line in mm.group(2).splitlines():
             line = line.strip()
