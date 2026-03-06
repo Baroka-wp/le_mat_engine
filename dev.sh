@@ -29,11 +29,12 @@ mkdir -p "$DATA_DIR"
 
 # ── Libérer le port 8000 si occupé (Docker ou autre processus) ───────────────
 PORT=8000
-PIDS=$(lsof -ti tcp:$PORT 2>/dev/null)
+PIDS=$(lsof -ti tcp:$PORT 2>/dev/null) || true
 if [ -n "$PIDS" ]; then
   echo "⚠️  Port $PORT occupé — arrêt des processus en cours..."
-  echo "$PIDS" | xargs kill -9 2>/dev/null
+  echo "$PIDS" | xargs kill -9 2>/dev/null || true
   sleep 1
+  echo "✓  Port $PORT libéré"
 fi
 
 # Arrêter aussi les conteneurs Docker sur ce port

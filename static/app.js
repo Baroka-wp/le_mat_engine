@@ -80,6 +80,22 @@ async function api(method, path, body) {
   return res.json().catch(() => null);
 }
 
+/** Désactive `btn`, affiche `loadingHtml`, exécute `fn`, puis restaure. */
+async function withLoading(btn, loadingHtml, fn) {
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = loadingHtml;
+  try { await fn(); } finally { btn.disabled = false; btn.innerHTML = original; }
+}
+
+/** POST d'un FormData (upload/import) — retourne les données JSON ou lève une erreur. */
+async function apiUpload(path, formData) {
+  const res = await fetch(path, { method: 'POST', body: formData });
+  const data = await res.json().catch(() => ({ detail: res.statusText }));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
 // ── Navigation Dashboard / Éditeur ───────────────────────────────────
 function showDashboard() {
   document.getElementById('view-dashboard').style.display = 'flex';
@@ -195,10 +211,7 @@ document.getElementById('btn-edit-proj-ok').onclick = async () => {
     // 1. Renommer si nécessaire
     let effectiveName = oldName;
     if (newName !== oldName) {
-      const r = await fetch(`/api/projects/${encodeURIComponent(oldName)}/rename`,
-        { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: newName }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || r.statusText);
+      const d = await api('POST', `/api/projects/${encodeURIComponent(oldName)}/rename`, { name: newName });
       effectiveName = d.project;
     }
     // 2. Mettre à jour icon + description
@@ -270,9 +283,7 @@ document.getElementById('import-project-input-dash').onchange = async (e) => {
     fd.append('file', file);
     fd.append('name', name);
     try {
-      const res = await fetch('/api/projects-import', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || res.statusText);
+      const data = await apiUpload('/api/projects-import', fd);
       toast(`Projet importé : ${data.project} ✓`, 'success');
       await loadDashboard();
     } catch(err) { toast(err.message, 'error'); }
@@ -408,8 +419,7 @@ function _applyDnsTab(type) {
 }
 
 async function loadDeploymentInfo() {
-  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`);
-  const data = await res.json();
+  const data = await api('GET', `/api/projects/${encodeURIComponent(currentProject)}/deploy`);
 
   if (!data.deployed) {
     document.getElementById('deploy-not-deployed').style.display = 'block';
@@ -492,131 +502,57 @@ async function loadDeploymentInfo() {
 
 async function createDeployment() {
   const btn = document.getElementById('btn-deploy-create');
-  const originalText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="btn-icon">⏳</span> Publication en cours...';
-
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`, { method: 'POST' });
-    const data = await res.json();
-
-    if (res.ok) {
+  await withLoading(btn, '<span class="btn-icon">⏳</span> Publication en cours...', async () => {
+    try {
+      await api('POST', `/api/projects/${encodeURIComponent(currentProject)}/deploy`);
       toast('Projet publié ! Lien généré ✓', 'success');
       await loadDeploymentInfo();
-    } else {
-      toast(`Erreur : ${data.message || data.detail}`, 'error');
-    }
-  } catch (err) {
-    toast(`Erreur : ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = originalText;
-  }
+    } catch (err) { toast(`Erreur : ${err.message}`, 'error'); }
+  });
 }
 
 async function undeployProject() {
   if (!confirm('⚠️ Dépublier ce projet ?\n\nLe lien ne sera plus accessible.')) return;
-
   try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy`, { method: 'DELETE' });
-    const data = await res.json();
-
-    if (res.ok) {
-      toast('Projet dépublié', 'success');
-      await loadDeploymentInfo();
-    } else {
-      toast(`Erreur : ${data.message || data.detail}`, 'error');
-    }
-  } catch (err) {
-    toast(`Erreur : ${err.message}`, 'error');
-  }
+    await api('DELETE', `/api/projects/${encodeURIComponent(currentProject)}/deploy`);
+    toast('Projet dépublié', 'success');
+    await loadDeploymentInfo();
+  } catch (err) { toast(`Erreur : ${err.message}`, 'error'); }
 }
 
 async function saveCustomDomain() {
   const domain = document.getElementById('custom-domain').value.trim().toLowerCase();
-
   if (!domain) { toast('Veuillez entrer un domaine', 'error'); return; }
-
   const domainRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
   if (!domainRegex.test(domain)) { toast('Nom de domaine invalide', 'error'); return; }
 
   const btn = document.getElementById('btn-domain-save');
-  btn.disabled = true;
-  btn.textContent = 'Configuration...';
-
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain }),
-    });
-    const data = await res.json();
-
-    if (res.ok) {
+  await withLoading(btn, 'Configuration...', async () => {
+    try {
+      await api('POST', `/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`, { domain });
       toast('Domaine configuré !', 'success');
       await loadDeploymentInfo();
-    } else {
-      toast(`Erreur : ${data.message || data.detail}`, 'error');
-    }
-  } catch (err) {
-    toast(`Erreur : ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Configurer';
-  }
+    } catch (err) { toast(`Erreur : ${err.message}`, 'error'); }
+  });
 }
 
 async function removeCustomDomain() {
   if (!confirm('Retirer ce domaine personnalisé ?')) return;
-
   try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`, { method: 'DELETE' });
-    const data = await res.json();
-
-    if (res.ok) {
-      toast('Domaine retiré', 'success');
-      await loadDeploymentInfo();
-    } else {
-      toast(`Erreur : ${data.message || data.detail}`, 'error');
-    }
-  } catch (err) {
-    toast(`Erreur : ${err.message}`, 'error');
-  }
+    await api('DELETE', `/api/projects/${encodeURIComponent(currentProject)}/deploy/domain`);
+    toast('Domaine retiré', 'success');
+    await loadDeploymentInfo();
+  } catch (err) { toast(`Erreur : ${err.message}`, 'error'); }
 }
 
 async function verifyDns() {
   const btn = document.getElementById('btn-dns-verify');
-  const originalText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="btn-icon">⏳</span> Validation...';
-
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/deploy/verify`);
-    const data = await res.json();
-
-    if (res.ok) {
+  await withLoading(btn, '<span class="btn-icon">⏳</span> Validation...', async () => {
+    try {
+      await api('GET', `/api/projects/${encodeURIComponent(currentProject)}/deploy/verify`);
       toast('Domaine validé et actif !', 'success');
       await loadDeploymentInfo();
-    } else {
-      toast(`Erreur : ${data.message || data.detail}`, 'error');
-    }
-  } catch (err) {
-    toast(`Erreur : ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = originalText;
-  }
-}
-
-function copyDeployUrl() {
-  const input = document.getElementById('deploy-url');
-  if (!input) return;
-  navigator.clipboard.writeText(input.value).then(() => {
-    toast('Lien copié !', 'success');
-  }).catch(() => {
-    input.select();
-    document.execCommand('copy');
-    toast('Lien copié !', 'success');
+    } catch (err) { toast(`Erreur : ${err.message}`, 'error'); }
   });
 }
 
@@ -631,6 +567,9 @@ function copyToClipboard(elementId) {
     toast('Copié !', 'success');
   });
 }
+
+/** Alias pour la compatibilité avec les anciens appelants. */
+function copyDeployUrl() { copyToClipboard('deploy-url'); }
 
 // ── Import project ────────────────────────────────────────────────────────────
 document.getElementById('btn-import-project').onclick = () => {
@@ -652,15 +591,7 @@ document.getElementById('import-project-input').onchange = async (e) => {
     formData.append('name', name);
 
     try {
-      const resp = await fetch('/api/projects-import', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-        toast(err.detail || 'Erreur import', 'error');
-        return;
-      }
+      await apiUpload('/api/projects-import', formData);
       await loadProjects();
       await selectProject(name);
       toast(`Projet "${name}" importé ✓`, 'success');
@@ -768,11 +699,11 @@ document.getElementById('upload-input').onchange = async (e) => {
   const fd = new FormData();
   Array.from(files).forEach(f => fd.append('files', f));
   fd.append('folder', '');
-  const res = await fetch(`/api/projects/${currentProject}/upload`, { method: 'POST', body: fd });
-  if (!res.ok) { toast('Erreur upload', 'error'); return; }
-  const data = await res.json();
-  await loadTree();
-  toast(`${data.uploaded.length} fichier(s) uploadé(s)`, 'success');
+  try {
+    const data = await apiUpload(`/api/projects/${currentProject}/upload`, fd);
+    await loadTree();
+    toast(`${data.uploaded.length} fichier(s) uploadé(s)`, 'success');
+  } catch { toast('Erreur upload', 'error'); }
   e.target.value = '';
 };
 

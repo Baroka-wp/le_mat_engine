@@ -42,28 +42,26 @@ DEPLOYMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def _load_deployments() -> dict:
     """Charge la configuration des déploiements."""
-    if DEPLOYMENTS_FILE.exists():
-        data = json.loads(DEPLOYMENTS_FILE.read_text())
-        # Migration: dict "tokens"
-        if "tokens" not in data:
-            data["tokens"] = {}
-            for proj, info in data.get("deployments", {}).items():
-                tok = info.get("token")
-                if tok:
-                    data["tokens"][tok] = proj
-        # Migration: dict "domains" (reconstruit depuis custom_domain si absent/incomplet)
-        if "domains" not in data:
-            data["domains"] = {}
+    data = _load_json(DEPLOYMENTS_FILE, {"deployments": {}, "domains": {}, "tokens": {}})
+    # Migration: dict "tokens"
+    if "tokens" not in data:
+        data["tokens"] = {}
         for proj, info in data.get("deployments", {}).items():
-            domain = info.get("custom_domain")
-            if domain and domain not in data["domains"]:
-                data["domains"][domain] = proj
-        return data
-    return {"deployments": {}, "domains": {}, "tokens": {}}
+            tok = info.get("token")
+            if tok:
+                data["tokens"][tok] = proj
+    # Migration: dict "domains" (reconstruit depuis custom_domain si absent/incomplet)
+    if "domains" not in data:
+        data["domains"] = {}
+    for proj, info in data.get("deployments", {}).items():
+        domain = info.get("custom_domain")
+        if domain and domain not in data["domains"]:
+            data["domains"][domain] = proj
+    return data
 
 def _save_deployments(data: dict):
     """Sauvegarde la configuration des déploiements."""
-    DEPLOYMENTS_FILE.write_text(json.dumps(data, indent=2))
+    _save_json(DEPLOYMENTS_FILE, data, indent=2)
 
 def generate_deploy_token() -> str:
     """Génère un token unique pour le déploiement."""
@@ -166,18 +164,14 @@ INJECT_SCRIPT = """<script>
 
 
 def inject_scripts(html: str) -> str:
-    tag = INJECT_SCRIPT
-    if "</body>" in html:
-        return html.replace("</body>", tag + "</body>", 1)
-    return html + tag
+    return _inject_html(html, INJECT_SCRIPT)
 
 
 def inject_scripts_deployed(html: str, project: str) -> str:
     """Injecte scripts pour projets déployés — nom de projet codé en dur (URL = /p/token/)."""
-    import json as _json
     script = f"""<script>
 (function(){{
-  var proj = {_json.dumps(project)};
+  var proj = {json.dumps(project)};
   var sdk = document.createElement('script');
   sdk.src = '/api/projects/' + proj + '/lemat-sdk.js';
   document.head.appendChild(sdk);
@@ -189,9 +183,7 @@ def inject_scripts_deployed(html: str, project: str) -> str:
   connect();
 }})();
 </script>"""
-    if "</body>" in html:
-        return html.replace("</body>", script + "</body>", 1)
-    return html + script
+    return _inject_html(html, script)
 
 
 # ── Project / file helpers ────────────────────────────────────────────────────
@@ -213,6 +205,55 @@ HIDDEN_SUFFIXES = {
 }
 
 _smtp_executor = ThreadPoolExecutor(max_workers=4)
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _load_json(path: Path, default=None):
+    """Charge un fichier JSON ; retourne `default` si absent ou illisible."""
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def _save_json(path: Path, data, **kwargs) -> None:
+    """Sérialise `data` en JSON et écrit dans `path`."""
+    path.write_text(json.dumps(data, **kwargs))
+
+
+def _require_project(project: str) -> Path:
+    """Retourne le chemin du projet ou lève HTTP 404."""
+    path = safe_path(project)
+    if not path.exists():
+        raise HTTPException(404, "Project not found")
+    return path
+
+
+def _require_db(project: str):
+    """Retourne (schema, db_path) ou lève HTTP 404 si aucune base trouvée."""
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found in project")
+    return schema, db_path
+
+
+def _inject_html(html: str, script: str) -> str:
+    """Insère `script` avant </body> (ou en fin de document)."""
+    if "</body>" in html:
+        return html.replace("</body>", script + "</body>", 1)
+    return html + script
+
+
+def _inject_deploy_sdk(html: str, project: str) -> HTMLResponse:
+    """Injecte la balise SDK déployé dans le <head> et retourne un HTMLResponse."""
+    content = html.replace(
+        "</head>",
+        f'<script src="/api/projects/{project}/deploy/sdk.js"></script></head>'
+    )
+    return HTMLResponse(content)
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 _scheduler = AsyncIOScheduler(timezone="UTC")
@@ -298,10 +339,28 @@ def resolve_table(schema: Optional[model_parser.SchemaDef], db_path: Optional[Pa
 
 # ── SDK generator ─────────────────────────────────────────────────────────────
 
+def _sdk_mail_js(project: str) -> str:
+    """Bloc JS Mail.send partagé entre les deux variantes de SDK."""
+    return f"""    /** Send an email via the project SMTP config.
+     *  @param {{ to, subject, html, text, from_name, from_email }} opts
+     *  @returns Promise<{{ sent: true, recipients: string[] }}>
+     */
+    Mail: {{
+      send: function(opts) {{
+        return fetch('/api/projects/{project}/mail/send', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(opts),
+        }}).then(function(r) {{
+          if (!r.ok) return r.json().then(function(e) {{ return Promise.reject(e); }});
+          return r.json();
+        }});
+      }},
+    }},"""
+
+
 def generate_sdk(project: str, schema: model_parser.SchemaDef) -> str:
-    model_lines = []
-    for m in schema.models:
-        model_lines.append(f"  {m.name}: _model('{m.name}'),")
+    model_lines = [f"  {m.name}: _model('{m.name}')," for m in schema.models]
 
     return f"""// Le Mat SDK — auto-generated for project "{project}"
 // Models: {', '.join(m.name for m in schema.models)}
@@ -346,22 +405,7 @@ def generate_sdk(project: str, schema: model_parser.SchemaDef) -> str:
 
   w.LeMat = {{
 {chr(10).join(model_lines)}
-    /** Send an email via the project SMTP config.
-     *  @param {{ to, subject, html, text, from_name, from_email }} opts
-     *  @returns Promise<{{ sent: true, recipients: string[] }}>
-     */
-    Mail: {{
-      send: function(opts) {{
-        return fetch('/api/projects/{project}/mail/send', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify(opts),
-        }}).then(function(r) {{
-          if (!r.ok) return r.json().then(function(e) {{ return Promise.reject(e); }});
-          return r.json();
-        }});
-      }},
-    }},
+{_sdk_mail_js(project)}
   }};
 }})(window);
 """
@@ -372,18 +416,7 @@ def generate_empty_sdk(project: str = "") -> str:
 (function(w) {{
   'use strict';
   w.LeMat = {{
-    Mail: {{
-      send: function(opts) {{
-        return fetch('/api/projects/{project}/mail/send', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify(opts),
-        }}).then(function(r) {{
-          if (!r.ok) return r.json().then(function(e) {{ return Promise.reject(e); }});
-          return r.json();
-        }});
-      }},
-    }},
+{_sdk_mail_js(project)}
   }};
 }})(window);
 """
@@ -417,10 +450,7 @@ def _smtp_config_path(project: str) -> Path:
 
 
 def _load_smtp_config(project: str) -> Optional[dict]:
-    path = _smtp_config_path(project)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
+    return _load_json(_smtp_config_path(project))
 
 
 def _build_smtp_connection(cfg: dict):
@@ -569,7 +599,7 @@ def save_smtp(project: str, config: SmtpConfig):
     data = config.model_dump()
     if data.get("password") == "••••••••":
         data["password"] = existing.get("password", "")
-    _smtp_config_path(project).write_text(json.dumps(data, indent=2))
+    _save_json(_smtp_config_path(project), data, indent=2)
     return {"message": "Configuration SMTP sauvegardée"}
 
 
@@ -648,18 +678,17 @@ def _cron_logs_path(project: str) -> Path:
 
 
 def _load_crons(project: str) -> list:
-    p = _crons_path(project)
-    return json.loads(p.read_text()) if p.exists() else []
+    return _load_json(_crons_path(project), default=[])
 
 
 def _save_crons(project: str, crons: list):
-    _crons_path(project).write_text(json.dumps(crons, indent=2, default=str))
+    _save_json(_crons_path(project), crons, indent=2, default=str)
 
 
 def _log_cron_run(project: str, job_id: str, job_name: str,
                   status: str, exit_code: int, output: str, ran_at: str):
     logs_path = _cron_logs_path(project)
-    logs = json.loads(logs_path.read_text()) if logs_path.exists() else []
+    logs = _load_json(logs_path, default=[])
     job_logs   = [l for l in logs if l["job_id"] == job_id]
     other_logs = [l for l in logs if l["job_id"] != job_id]
     job_logs.insert(0, {
@@ -667,9 +696,7 @@ def _log_cron_run(project: str, job_id: str, job_name: str,
         "ran_at": ran_at, "status": status,
         "exit_code": exit_code, "output": output[-8000:],
     })
-    logs_path.write_text(
-        json.dumps(other_logs + job_logs[:CRON_LOG_MAX], indent=2, default=str)
-    )
+    _save_json(logs_path, other_logs + job_logs[:CRON_LOG_MAX], indent=2, default=str)
 
 
 def _generate_python_lemat_init(project: str) -> str:
@@ -968,10 +995,8 @@ async def run_cron_now(project: str, job_id: str):
 
 @app.get("/api/projects/{project}/crons/{job_id}/logs")
 def get_cron_logs(project: str, job_id: str):
-    logs_path = _cron_logs_path(project)
-    if not logs_path.exists():
-        return []
-    return [l for l in json.loads(logs_path.read_text()) if l["job_id"] == job_id]
+    logs = _load_json(_cron_logs_path(project), default=[])
+    return [l for l in logs if l["job_id"] == job_id]
 
 
 # ── Live Reload WebSocket ─────────────────────────────────────────────────────
@@ -999,13 +1024,7 @@ def _meta_path(project: str) -> Path:
     return safe_path(project) / "_meta.json"
 
 def _load_meta(project: str) -> dict:
-    path = _meta_path(project)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            pass
-    return {"description": "", "icon": "📦"}
+    return _load_json(_meta_path(project), default={"description": "", "icon": "📦"})
 
 @app.get("/api/projects")
 def list_projects():
@@ -1024,15 +1043,13 @@ def list_projects():
 
 @app.get("/api/projects/{project}/meta")
 def get_project_meta(project: str):
-    if not safe_path(project).exists():
-        raise HTTPException(404, "Project not found")
+    _require_project(project)
     return _load_meta(project)
 
 @app.put("/api/projects/{project}/meta")
 def update_project_meta(project: str, meta: ProjectMeta):
-    if not safe_path(project).exists():
-        raise HTTPException(404, "Project not found")
-    _meta_path(project).write_text(json.dumps(meta.dict()))
+    _require_project(project)
+    _save_json(_meta_path(project), meta.dict())
     return meta.dict()
 
 @app.post("/api/projects/{project}/rename")
@@ -1040,10 +1057,8 @@ def rename_project(project: str, body: dict):
     new_name = (body.get("name") or "").strip()
     if not new_name:
         raise HTTPException(400, "Le nom est requis")
-    old_path = safe_path(project)
+    old_path = _require_project(project)
     new_path = BASE_DIR / new_name
-    if not old_path.exists():
-        raise HTTPException(404, "Project not found")
     if new_path.exists() and new_name != project:
         raise HTTPException(409, "Un projet avec ce nom existe déjà")
     if new_name != project:
@@ -1073,15 +1088,13 @@ def create_project(project: str, meta: Optional[ProjectMeta] = None):
         raise HTTPException(409, "Project already exists")
     path.mkdir(parents=True)
     if meta:
-        _meta_path(project).write_text(json.dumps(meta.dict()))
+        _save_json(_meta_path(project), meta.dict())
     return {"message": f"Project '{project}' created"}
 
 
 @app.delete("/api/projects/{project}")
 def delete_project(project: str):
-    path = safe_path(project)
-    if not path.exists():
-        raise HTTPException(404, "Project not found")
+    path = _require_project(project)
     shutil.rmtree(path)
     return {"message": f"Project '{project}' deleted"}
 
@@ -1127,9 +1140,7 @@ def get_deployment(project: str, request: Request):
 @app.post("/api/projects/{project}/deploy")
 def deploy_project(project: str, request: Request):
     """Déploie un projet et génère un lien unique accessible depuis ce serveur."""
-    project_dir = safe_path(project)
-    if not project_dir.exists():
-        raise HTTPException(404, "Project not found")
+    project_dir = _require_project(project)
 
     deployments = _load_deployments()
 
@@ -1322,9 +1333,7 @@ def list_deployments():
 @app.get("/api/projects/{project}/export")
 def export_project(project: str):
     """Exporte l'intégralité du projet (DB, SMTP, crons, logs, etc.)"""
-    project_dir = safe_path(project)
-    if not project_dir.exists():
-        raise HTTPException(404, "Project not found")
+    project_dir = _require_project(project)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1374,15 +1383,12 @@ async def import_project(
     zf.close()
 
     # Re-register cron jobs if any
-    crons_file = project_dir / "crons.json"
-    if crons_file.exists():
-        try:
-            crons = json.loads(crons_file.read_text())
-            for job in crons:
-                if job.get("enabled", True):
-                    _register_cron(name, job)
-        except Exception:
-            pass
+    try:
+        for job in _load_json(project_dir / "crons.json", default=[]):
+            if job.get("enabled", True):
+                _register_cron(name, job)
+    except Exception:
+        pass
 
     return {"project": name, "message": f"Projet '{name}' importé avec succès"}
 
@@ -1391,10 +1397,7 @@ async def import_project(
 
 @app.get("/api/projects/{project}/tree")
 def get_tree(project: str):
-    path = safe_path(project)
-    if not path.exists():
-        raise HTTPException(404, "Project not found")
-    return dir_tree(path)
+    return dir_tree(_require_project(project))
 
 
 # ── File CRUD ─────────────────────────────────────────────────────────────────
@@ -1450,9 +1453,7 @@ async def upload_files(
     files: List[UploadFile] = File(...),
     folder: str = Form(default=""),
 ):
-    project_dir = safe_path(project)
-    if not project_dir.exists():
-        raise HTTPException(404, "Project not found")
+    project_dir = _require_project(project)
     saved = []
     for upload in files:
         dest = safe_path(project, os.path.join(folder, upload.filename))
@@ -1548,15 +1549,9 @@ def data_list(
     offset: int = Query(default=0, ge=0),
     order_by: Optional[str] = Query(default=None),
 ):
-    schema, db_path = get_schema_and_db(project)
-    if not db_path or not db_path.exists():
-        raise HTTPException(404, "No database found in project")
-
+    schema, db_path = _require_db(project)
     real_table = resolve_table(schema, db_path, table)
-
-    # Extra query params → filters
     filters = {}  # could be extended via request.query_params
-
     rows = db_engine.select_all(db_path, real_table, filters or None, limit, offset, order_by)
     total = db_engine.row_count(db_path, real_table)
     return {"table": real_table, "total": total, "limit": limit, "offset": offset, "rows": rows}
@@ -1564,14 +1559,9 @@ def data_list(
 
 @app.get("/api/projects/{project}/data/{table}/{pk}")
 def data_get_one(project: str, table: str, pk: str):
-    schema, db_path = get_schema_and_db(project)
-    if not db_path or not db_path.exists():
-        raise HTTPException(404, "No database found in project")
-
+    schema, db_path = _require_db(project)
     real_table = resolve_table(schema, db_path, table)
     pk_col = db_engine.get_pk_col(db_path, real_table)
-
-    # Try int then str
     pk_val: Any = int(pk) if pk.isdigit() else pk
     row = db_engine.select_one(db_path, real_table, pk_col, pk_val)
     if row is None:
@@ -1581,28 +1571,20 @@ def data_get_one(project: str, table: str, pk: str):
 
 @app.post("/api/projects/{project}/data/{table}", status_code=201)
 def data_create(project: str, table: str, body: dict):
-    schema, db_path = get_schema_and_db(project)
-    if not db_path or not db_path.exists():
-        raise HTTPException(404, "No database found in project")
-
+    schema, db_path = _require_db(project)
     real_table = resolve_table(schema, db_path, table)
     try:
-        row = db_engine.insert(db_path, real_table, body)
+        return db_engine.insert(db_path, real_table, body)
     except Exception as e:
         raise HTTPException(400, str(e))
-    return row
 
 
 @app.put("/api/projects/{project}/data/{table}/{pk}")
 def data_update(project: str, table: str, pk: str, body: dict):
-    schema, db_path = get_schema_and_db(project)
-    if not db_path or not db_path.exists():
-        raise HTTPException(404, "No database found in project")
-
+    schema, db_path = _require_db(project)
     real_table = resolve_table(schema, db_path, table)
     pk_col = db_engine.get_pk_col(db_path, real_table)
     pk_val: Any = int(pk) if pk.isdigit() else pk
-
     row = db_engine.update(db_path, real_table, pk_col, pk_val, body)
     if row is None:
         raise HTTPException(404, f"Row {pk} not found")
@@ -1611,14 +1593,10 @@ def data_update(project: str, table: str, pk: str, body: dict):
 
 @app.delete("/api/projects/{project}/data/{table}/{pk}")
 def data_delete(project: str, table: str, pk: str):
-    schema, db_path = get_schema_and_db(project)
-    if not db_path or not db_path.exists():
-        raise HTTPException(404, "No database found in project")
-
+    schema, db_path = _require_db(project)
     real_table = resolve_table(schema, db_path, table)
     pk_col = db_engine.get_pk_col(db_path, real_table)
     pk_val: Any = int(pk) if pk.isdigit() else pk
-
     if not db_engine.delete(db_path, real_table, pk_col, pk_val):
         raise HTTPException(404, f"Row {pk} not found")
     return {"deleted": True, "id": pk}
@@ -1798,10 +1776,7 @@ async def serve_token_file(token: str, filepath: str):
 @app.get("/api/projects/{project}/deploy/sdk.js")
 def get_deploy_sdk(project: str):
     """Génère le SDK Le Mat pour un projet déployé."""
-    project_dir = safe_path(project)
-    if not project_dir.exists():
-        raise HTTPException(404, "Project not found")
-
+    project_dir = _require_project(project)
     schema = load_schema(project_dir)
     if not schema:
         raise HTTPException(404, "No schema found")
@@ -1827,21 +1802,13 @@ async def serve_deployed_project(request: Request, filepath: str = ""):
         raise HTTPException(404, "Not found")
 
     # Vérifier que le projet existe
-    project_dir = safe_path(project_name)
-    if not project_dir.exists():
-        raise HTTPException(404, "Project not found")
+    project_dir = _require_project(project_name)
 
     # Racine du projet → index.html
     if not filepath or filepath == "/":
         index = project_dir / "index.html"
         if index.exists():
-            content = index.read_text(errors="replace")
-            # Injecter le SDK pour les projets déployés
-            content = content.replace(
-                "</head>",
-                f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
-            )
-            return HTMLResponse(content)
+            return _inject_deploy_sdk(index.read_text(errors="replace"), project_name)
         raise HTTPException(404, "No index.html found")
 
     # API data → router vers l'API du projet
@@ -1860,22 +1827,12 @@ async def serve_deployed_project(request: Request, filepath: str = ""):
     if file_path.is_dir():
         index = file_path / "index.html"
         if index.exists():
-            content = index.read_text(errors="replace")
-            content = content.replace(
-                "</head>",
-                f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
-            )
-            return HTMLResponse(content)
+            return _inject_deploy_sdk(index.read_text(errors="replace"), project_name)
         raise HTTPException(404, "No index.html found")
 
     # Fichiers HTML → injection du SDK
     if file_path.suffix.lower() in (".html", ".htm"):
-        content = file_path.read_text(errors="replace")
-        content = content.replace(
-            "</head>",
-            f'<script src="/api/projects/{project_name}/deploy/sdk.js"></script></head>'
-        )
-        return HTMLResponse(content)
+        return _inject_deploy_sdk(file_path.read_text(errors="replace"), project_name)
 
     # Autres fichiers → servir directement
     return FileResponse(file_path)
