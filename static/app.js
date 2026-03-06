@@ -718,9 +718,11 @@ async function openFile(path) {
   if (!tab) {
     const data = await api('GET', `/api/projects/${currentProject}/files/${path}`);
     const model = monaco.editor.createModel(data.content, detectLang(path));
-    const type = (ext === 'lemat') ? 'lemat' : 'file';
-    // .lemat files open in Visual mode by default
-    const visualMode = (ext === 'lemat');
+    const filename = path.split('/').pop();
+    const isSchemaFile = filename === 'schema.lemat';
+    const isConfigFile = filename === 'config.lemat';
+    const type = isSchemaFile ? 'lemat' : isConfigFile ? 'config' : 'file';
+    const visualMode = isSchemaFile || isConfigFile;
     tab = { path, modified: false, model, type, _visualMode: visualMode };
     model.onDidChangeContent(() => { tab.modified = true; renderTabs(); });
     tabs.push(tab);
@@ -734,17 +736,23 @@ async function openFile(path) {
 function showTab(tab) {
   if (tab.type === 'data') { showDataTab(tab); return; }
   const container = document.getElementById('editor-container');
-  container.querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
+  container.querySelectorAll('.data-view, .schema-view, .config-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'none';
 
   // Show/hide the Visual toggle button for .lemat files
   _updateVisualToggle(tab);
 
-  // Schema visual mode for .lemat files
+  // Schema visual mode for schema.lemat
   if (tab.type === 'lemat' && tab._visualMode) {
     document.getElementById('monaco-container').style.display = 'none';
     showSchemaVisualEditor(tab, container);
+    return;
+  }
+  // Config visual mode for config.lemat
+  if (tab.type === 'config' && tab._visualMode) {
+    document.getElementById('monaco-container').style.display = 'none';
+    showConfigVisualEditor(tab, container);
     return;
   }
   // Quitter le mode visuel → nettoyer la référence au status
@@ -759,7 +767,7 @@ function _updateVisualToggle(tab) {
   // Le bouton est dans index.html — pas d'injection dynamique
   const btn = document.getElementById('btn-schema-visual');
   if (!btn) return;
-  if (tab?.type === 'lemat') {
+  if (tab?.type === 'lemat' || tab?.type === 'config') {
     btn.style.display = 'inline-block';
     btn.textContent = tab._visualMode ? '📝 Code' : '🔲 Visual';
     btn.title = tab._visualMode ? 'Voir/modifier le code source' : 'Éditeur visuel';
@@ -774,7 +782,7 @@ function _updateVisualToggle(tab) {
 
 function showWelcome() {
   document.getElementById('monaco-container').style.display = 'none';
-  document.getElementById('editor-container').querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
+  document.getElementById('editor-container').querySelectorAll('.data-view, .schema-view, .config-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'flex';
   // Hide the visual toggle button
@@ -959,7 +967,7 @@ async function showDataTab(tab) {
   document.getElementById('monaco-container').style.display = 'none';
 
   const container = document.getElementById('editor-container');
-  container.querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
+  container.querySelectorAll('.data-view, .schema-view, .config-view').forEach(el => el.remove());
 
   const LIMIT = 50;
   tab._page = tab._page || 0;
@@ -1312,9 +1320,9 @@ async function showSchemaVisualEditor(tab, container) {
   // Référence globale pour _autoSaveSchema
   _svStatusEl = toolbar.querySelector('#sv-status');
 
-  // ── Visual panel ────────────────────────────────────────────────────
+  // ── Visual panel — full width (pas de code panel à côté) ────────────
   const visual = document.createElement('div');
-  visual.classList.add('schema-visual-panel');
+  visual.classList.add('schema-visual-panel', 'full');
   visual.id = 'sv-visual-panel';
   view.appendChild(visual);
 
@@ -1324,9 +1332,340 @@ async function showSchemaVisualEditor(tab, container) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+// CONFIG VISUAL EDITOR  (config.lemat)
+// ══════════════════════════════════════════════════════════════════════════════
+
+function showConfigVisualEditor(tab, container) {
+  container.querySelectorAll('.config-view').forEach(el => el.remove());
+
+  // Parse JSON depuis Monaco si pas encore en mémoire
+  if (!tab._configData) {
+    try {
+      tab._configData = JSON.parse(tab.model.getValue());
+    } catch {
+      tab._configData = { auth: { enabled: false, providers: ['email'], session_ttl: 3600 }, roles: {}, services: {}, env: {} };
+    }
+  }
+
+  const view = document.createElement('div');
+  view.classList.add('config-view');
+
+  // ── Toolbar ────────────────────────────────────────────────────────────────
+  const toolbar = document.createElement('div');
+  toolbar.classList.add('schema-view-toolbar');
+  toolbar.innerHTML = `
+    <span class="sv-title">⚙ config.lemat</span>
+    <span class="sv-status" id="cfg-status"></span>`;
+  view.appendChild(toolbar);
+  const statusEl = toolbar.querySelector('#cfg-status');
+
+  // ── Scrollable body ────────────────────────────────────────────────────────
+  const body = document.createElement('div');
+  body.classList.add('cfg-body');
+  view.appendChild(body);
+
+  container.appendChild(view);
+
+  // Commit function : sérialise _configData → Monaco → auto-save
+  function commit() {
+    const json = JSON.stringify(tab._configData, null, 2);
+    if (tab.model.getValue() !== json) {
+      tab.model.setValue(json);
+      tab.modified = true;
+      renderTabs();
+    }
+    // Sauvegarder sur le serveur
+    _autoSaveConfig(tab, statusEl);
+  }
+
+  renderConfigEditor(body, tab._configData, commit);
+}
+
+async function _autoSaveConfig(tab, statusEl) {
+  if (statusEl) { statusEl.textContent = '⏳ Enregistrement…'; statusEl.className = 'sv-status'; }
+  try {
+    await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`,
+      { content: tab.model.getValue() });
+    tab.modified = false;
+    renderTabs();
+    if (statusEl) {
+      statusEl.textContent = '✓ Sauvegardé';
+      statusEl.className = 'sv-status ok';
+      setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 2500);
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '✗ ' + e.message; statusEl.className = 'sv-status err'; }
+  }
+}
+
+function renderConfigEditor(body, cfg, commit) {
+  body.innerHTML = '';
+
+  // ── Helper: section card ───────────────────────────────────────────────────
+  function section(icon, title) {
+    const card = document.createElement('div');
+    card.classList.add('cfg-card');
+    const h = document.createElement('div');
+    h.classList.add('cfg-card-header');
+    h.textContent = `${icon} ${title}`;
+    card.appendChild(h);
+    const content = document.createElement('div');
+    content.classList.add('cfg-card-body');
+    card.appendChild(content);
+    body.appendChild(card);
+    return content;
+  }
+
+  // ── Helper: row label + control ───────────────────────────────────────────
+  function row(parent, label, control) {
+    const r = document.createElement('div');
+    r.classList.add('cfg-row');
+    const lbl = document.createElement('span');
+    lbl.classList.add('cfg-label');
+    lbl.textContent = label;
+    r.appendChild(lbl);
+    r.appendChild(control);
+    parent.appendChild(r);
+    return r;
+  }
+
+  // ── Helper: toggle ─────────────────────────────────────────────────────────
+  function toggle(value, onChange) {
+    const btn = document.createElement('button');
+    btn.classList.add('cfg-toggle');
+    function refresh() {
+      btn.textContent = value ? 'ON' : 'OFF';
+      btn.classList.toggle('cfg-toggle-on', value);
+      btn.classList.toggle('cfg-toggle-off', !value);
+    }
+    refresh();
+    btn.onclick = () => { value = !value; refresh(); onChange(value); };
+    return btn;
+  }
+
+  // ══ 1. AUTH ════════════════════════════════════════════════════════════════
+  const authBody = section('🔐', 'Authentification');
+  cfg.auth = cfg.auth || { enabled: false, providers: ['email'], session_ttl: 3600 };
+
+  row(authBody, 'Activée', toggle(cfg.auth.enabled, v => { cfg.auth.enabled = v; commit(); }));
+
+  // Providers — bloc vertical (label + chips sur ligne séparée)
+  const provBlock = document.createElement('div');
+  provBlock.classList.add('cfg-providers-block');
+  const provLbl = document.createElement('div');
+  provLbl.classList.add('cfg-sublabel');
+  provLbl.textContent = 'Fournisseurs';
+  const provOptions = ['email', 'google', 'github', 'facebook'];
+  const provList = document.createElement('div');
+  provList.classList.add('cfg-chip-group');
+  provOptions.forEach(p => {
+    const chip = document.createElement('span');
+    chip.classList.add('cfg-chip');
+    const isChecked = (cfg.auth.providers || []).includes(p);
+    if (isChecked) chip.classList.add('checked');
+    chip.textContent = p;
+    chip.addEventListener('click', () => {
+      cfg.auth.providers = cfg.auth.providers || [];
+      if (chip.classList.toggle('checked')) {
+        if (!cfg.auth.providers.includes(p)) cfg.auth.providers.push(p);
+      } else {
+        cfg.auth.providers = cfg.auth.providers.filter(x => x !== p);
+      }
+      commit();
+    });
+    provList.appendChild(chip);
+  });
+  provBlock.appendChild(provLbl);
+  provBlock.appendChild(provList);
+  authBody.appendChild(provBlock);
+
+  // Session TTL
+  const ttlInput = document.createElement('input');
+  ttlInput.type = 'number'; ttlInput.value = cfg.auth.session_ttl || 3600;
+  ttlInput.min = 60; ttlInput.step = 60; ttlInput.classList.add('cfg-input-num');
+  const ttlWrap = document.createElement('span');
+  ttlWrap.appendChild(ttlInput);
+  ttlWrap.appendChild(Object.assign(document.createElement('span'), { textContent: ' s', className: 'cfg-unit' }));
+  ttlInput.addEventListener('change', () => { cfg.auth.session_ttl = parseInt(ttlInput.value) || 3600; commit(); });
+  row(authBody, 'Session TTL', ttlWrap);
+
+  // ══ 2. ROLES ══════════════════════════════════════════════════════════════
+  const rolesBody = section('👥', 'Rôles');
+  cfg.roles = cfg.roles || {};
+
+  function renderRoles() {
+    rolesBody.innerHTML = '';
+    const entries = Object.entries(cfg.roles);
+    if (entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.classList.add('cfg-empty'); empty.textContent = 'Aucun rôle défini.';
+      rolesBody.appendChild(empty);
+    }
+    entries.forEach(([name, role]) => {
+      const r = document.createElement('div');
+      r.classList.add('cfg-role-row');
+      // Name badge
+      const badge = document.createElement('span');
+      badge.classList.add('cfg-role-name');
+      badge.textContent = name;
+      // Description input
+      const desc = document.createElement('input');
+      desc.type = 'text'; desc.value = role.description || '';
+      desc.placeholder = 'Description…'; desc.classList.add('cfg-input-text');
+      desc.addEventListener('change', () => { cfg.roles[name].description = desc.value; commit(); });
+      // Delete
+      const del = document.createElement('button');
+      del.textContent = '✕'; del.classList.add('cfg-btn-icon', 'danger');
+      del.title = `Supprimer le rôle "${name}"`;
+      del.onclick = () => { delete cfg.roles[name]; commit(); renderRoles(); };
+      r.appendChild(badge); r.appendChild(desc); r.appendChild(del);
+      rolesBody.appendChild(r);
+    });
+    // Add button
+    const addRow = document.createElement('div');
+    addRow.classList.add('cfg-add-row');
+    const nameIn = document.createElement('input');
+    nameIn.type = 'text'; nameIn.placeholder = 'Nom du rôle…'; nameIn.classList.add('cfg-input-text');
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ Ajouter'; addBtn.classList.add('cfg-btn-add');
+    addBtn.onclick = () => {
+      const n = nameIn.value.trim().toLowerCase().replace(/\s+/g, '_');
+      if (!n || cfg.roles[n]) { toast('Nom invalide ou déjà existant', 'error'); return; }
+      cfg.roles[n] = { description: '' };
+      commit(); renderRoles();
+    };
+    addRow.appendChild(nameIn); addRow.appendChild(addBtn);
+    rolesBody.appendChild(addRow);
+  }
+  renderRoles();
+
+  // ══ 3. SERVICES — grille de cartes ══════════════════════════════════════
+  const svcBody = section('⚙', 'Services');
+  cfg.services = cfg.services || {};
+  const SVC_META = {
+    smtp:    { label: 'SMTP',    desc: 'Envoi d\'email',      icon: '✉' },
+    cron:    { label: 'CRON',    desc: 'Tâches planifiées',   icon: '⏰' },
+    llm:     { label: 'LLM',     desc: 'IA / Génération',     icon: '🤖' },
+    payment: { label: 'Paiement',desc: 'Stripe / PayPal',     icon: '💳' },
+    storage: { label: 'Stockage',desc: 'Fichiers & médias',   icon: '🗂' },
+  };
+  const svcGrid = document.createElement('div');
+  svcGrid.classList.add('cfg-svc-grid');
+  svcBody.appendChild(svcGrid);
+
+  Object.entries(SVC_META).forEach(([svc, meta]) => {
+    cfg.services[svc] = cfg.services[svc] || { enabled: false };
+    let enabled = cfg.services[svc].enabled;
+
+    const card = document.createElement('div');
+    card.classList.add('cfg-svc-card');
+    if (enabled) card.classList.add('enabled');
+
+    const iconEl = document.createElement('span');
+    iconEl.classList.add('cfg-svc-icon');
+    iconEl.textContent = meta.icon;
+
+    const info = document.createElement('div');
+    info.classList.add('cfg-svc-info');
+    info.innerHTML = `<strong>${meta.label}</strong><span>${meta.desc}</span>`;
+
+    const tgl = document.createElement('button');
+    tgl.classList.add('cfg-svc-toggle');
+    tgl.textContent = enabled ? 'ON' : 'OFF';
+    tgl.classList.toggle('on', enabled);
+
+    tgl.addEventListener('click', () => {
+      enabled = !enabled;
+      cfg.services[svc].enabled = enabled;
+      tgl.textContent = enabled ? 'ON' : 'OFF';
+      tgl.classList.toggle('on', enabled);
+      card.classList.toggle('enabled', enabled);
+      commit();
+    });
+
+    card.appendChild(iconEl);
+    card.appendChild(info);
+    card.appendChild(tgl);
+    svcGrid.appendChild(card);
+  });
+
+  // ══ 4. ENV ════════════════════════════════════════════════════════════════
+  const envBody = section('🌿', "Variables d'environnement");
+  cfg.env = cfg.env || {};
+
+  function renderEnv() {
+    envBody.innerHTML = '';
+    const entries = Object.entries(cfg.env);
+    if (entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.classList.add('cfg-empty'); empty.textContent = 'Aucune variable définie.';
+      envBody.appendChild(empty);
+    }
+    entries.forEach(([key, val]) => {
+      const r = document.createElement('div');
+      r.classList.add('cfg-env-row');
+      const keyIn = document.createElement('input');
+      keyIn.type = 'text'; keyIn.value = key; keyIn.classList.add('cfg-input-key');
+      keyIn.placeholder = 'CLE'; keyIn.style.fontFamily = 'monospace';
+      const sep = document.createElement('span');
+      sep.textContent = '='; sep.classList.add('cfg-env-sep');
+      const valIn = document.createElement('input');
+      valIn.type = 'text'; valIn.value = val; valIn.classList.add('cfg-input-text');
+      valIn.placeholder = 'valeur'; valIn.style.fontFamily = 'monospace';
+      const del = document.createElement('button');
+      del.textContent = '✕'; del.classList.add('cfg-btn-icon', 'danger');
+      del.onclick = () => { delete cfg.env[key]; commit(); renderEnv(); };
+      // Rename key on blur
+      keyIn.addEventListener('change', () => {
+        const newKey = keyIn.value.trim().toUpperCase().replace(/\s+/g, '_');
+        if (!newKey || (newKey !== key && cfg.env[newKey] !== undefined)) {
+          toast('Clé invalide ou déjà existante', 'error'); keyIn.value = key; return;
+        }
+        if (newKey !== key) { cfg.env[newKey] = cfg.env[key]; delete cfg.env[key]; }
+        commit(); renderEnv();
+      });
+      valIn.addEventListener('change', () => { cfg.env[key] = valIn.value; commit(); });
+      r.appendChild(keyIn); r.appendChild(sep); r.appendChild(valIn); r.appendChild(del);
+      envBody.appendChild(r);
+    });
+    // Add row
+    const addRow = document.createElement('div');
+    addRow.classList.add('cfg-add-row');
+    const kIn = document.createElement('input');
+    kIn.type = 'text'; kIn.placeholder = 'CLE'; kIn.classList.add('cfg-input-key');
+    kIn.style.fontFamily = 'monospace';
+    const eqSep = document.createElement('span');
+    eqSep.textContent = '='; eqSep.classList.add('cfg-env-sep');
+    const vIn = document.createElement('input');
+    vIn.type = 'text'; vIn.placeholder = 'valeur'; vIn.classList.add('cfg-input-text');
+    vIn.style.fontFamily = 'monospace';
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ Ajouter'; addBtn.classList.add('cfg-btn-add');
+    addBtn.onclick = () => {
+      const k = kIn.value.trim().toUpperCase().replace(/\s+/g, '_');
+      if (!k || cfg.env[k] !== undefined) { toast('Clé invalide ou déjà existante', 'error'); return; }
+      cfg.env[k] = vIn.value;
+      commit(); renderEnv();
+    };
+    addRow.appendChild(kIn); addRow.appendChild(eqSep); addRow.appendChild(vIn); addRow.appendChild(addBtn);
+    envBody.appendChild(addRow);
+  }
+  renderEnv();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// END CONFIG VISUAL EDITOR
+// ══════════════════════════════════════════════════════════════════════════════
+
 function renderSchemaModels(container, models, tab) {
   container.innerHTML = '';
   tab._parsedModels = tab._parsedModels || models;
+
+  // Grid container pour les cartes modèles
+  const grid = document.createElement('div');
+  grid.classList.add('sv-models-grid');
+  container.appendChild(grid);
 
   (tab._parsedModels).forEach((model, mi) => {
     const card = document.createElement('div');
@@ -1341,7 +1680,7 @@ function renderSchemaModels(container, models, tab) {
       </div>
       <div class="sv-field-list" id="sv-fields-${mi}"></div>
       <button class="sv-add-field" data-action="add-field" data-mi="${mi}">＋ Ajouter un champ</button>`;
-    container.appendChild(card);
+    grid.appendChild(card);
 
     const fieldList = card.querySelector(`#sv-fields-${mi}`);
     (model.fields || []).forEach((field, fi) => {
