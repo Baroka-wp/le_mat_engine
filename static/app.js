@@ -8,6 +8,7 @@ let tabs           = [];
 let activeTab      = null;
 let currentRunId   = null;
 let currentES      = null;
+let _svStatusEl    = null;   // référence vers le <span> statut du Schema Visual Editor
 
 // Types de fichiers qui s'ouvrent dans le navigateur (pas exécutés)
 const WEB_EXTS = new Set(['html', 'htm', 'css', 'svg', 'js', 'json']);
@@ -718,7 +719,9 @@ async function openFile(path) {
     const data = await api('GET', `/api/projects/${currentProject}/files/${path}`);
     const model = monaco.editor.createModel(data.content, detectLang(path));
     const type = (ext === 'lemat') ? 'lemat' : 'file';
-    tab = { path, modified: false, model, type };
+    // .lemat files open in Visual mode by default
+    const visualMode = (ext === 'lemat');
+    tab = { path, modified: false, model, type, _visualMode: visualMode };
     model.onDidChangeContent(() => { tab.modified = true; renderTabs(); });
     tabs.push(tab);
   }
@@ -744,6 +747,8 @@ function showTab(tab) {
     showSchemaVisualEditor(tab, container);
     return;
   }
+  // Quitter le mode visuel → nettoyer la référence au status
+  _svStatusEl = null;
   document.getElementById('monaco-container').style.display = 'block';
   editor.setModel(tab.model);
   editor.layout();
@@ -751,18 +756,13 @@ function showTab(tab) {
 }
 
 function _updateVisualToggle(tab) {
-  // Inject "🔲 Visual" button into run-toolbar if not already there
-  let btn = document.getElementById('btn-schema-visual');
-  if (!btn) {
-    btn = document.createElement('button');
-    btn.id = 'btn-schema-visual';
-    btn.title = 'Basculer en éditeur visuel de schéma';
-    const toolbar = document.getElementById('run-toolbar');
-    if (toolbar) toolbar.insertBefore(btn, toolbar.firstChild);
-  }
+  // Le bouton est dans index.html — pas d'injection dynamique
+  const btn = document.getElementById('btn-schema-visual');
+  if (!btn) return;
   if (tab?.type === 'lemat') {
-    btn.style.display = 'inline-flex';
-    btn.textContent = tab._visualMode ? '< Code' : '🔲 Visual';
+    btn.style.display = 'inline-block';
+    btn.textContent = tab._visualMode ? '📝 Code' : '🔲 Visual';
+    btn.title = tab._visualMode ? 'Voir/modifier le code source' : 'Éditeur visuel';
     btn.onclick = () => {
       tab._visualMode = !tab._visualMode;
       showTab(tab);
@@ -1209,21 +1209,66 @@ function closeRowModal() {
 }
 
 
+// ── Auto-save schema ─────────────────────────────────────────────────
+// Appelé après chaque mutation (add/edit/del modèle ou champ).
+// Sérialise _parsedModels → Monaco → serveur → sync DB.
+async function _autoSaveSchema(tab) {
+  if (!currentProject || !tab._parsedModels) return;
+
+  // 1. Mettre Monaco à jour immédiatement (protection anti perte de données)
+  const lematText = modelsToLemat(tab._parsedModels);
+  tab.model.setValue(lematText);
+  tab.modified = false;
+  renderTabs();
+
+  // 2. Afficher l'indicateur
+  if (_svStatusEl) {
+    _svStatusEl.textContent = '⏳ Enregistrement…';
+    _svStatusEl.className = 'sv-status';
+  }
+
+  // 3. Sauvegarder sur le serveur + synchroniser la DB
+  try {
+    await api('PUT', `/api/projects/${currentProject}/schema`, {
+      content: lematText, auto_sync: true,
+    });
+    await loadDbSection();
+    if (_svStatusEl) {
+      _svStatusEl.textContent = '✓ Sauvegardé';
+      _svStatusEl.className = 'sv-status ok';
+      setTimeout(() => {
+        if (_svStatusEl && _svStatusEl.textContent === '✓ Sauvegardé')
+          _svStatusEl.textContent = '';
+      }, 2500);
+    }
+  } catch (e) {
+    if (_svStatusEl) {
+      _svStatusEl.textContent = '✗ ' + e.message;
+      _svStatusEl.className = 'sv-status err';
+    }
+    toast('Erreur schema : ' + e.message, 'error');
+  }
+}
+
+
 // ── Schema Visual Editor ──────────────────────────────────────────────
 
 async function showSchemaVisualEditor(tab, container) {
   container.querySelectorAll('.schema-view').forEach(el => el.remove());
+  _svStatusEl = null;
 
-  // Parse schema from Monaco content via backend validate endpoint
-  let parsedModels = [];
-  try {
-    const content = tab.model.getValue();
-    const res = await api('POST', `/api/projects/${currentProject}/schema/validate`,
-      { content, auto_sync: false });
-    parsedModels = res.models || [];
-    tab._parsedModels = JSON.parse(JSON.stringify(parsedModels)); // deep copy
-  } catch (e) {
-    parsedModels = tab._parsedModels || [];
+  // Si _parsedModels existe déjà (retour depuis Code ou tab switch),
+  // l'utiliser directement — ne jamais effacer les ajouts en mémoire.
+  // Sinon, parser le contenu Monaco (première ouverture).
+  if (!tab._parsedModels) {
+    try {
+      const content = tab.model.getValue();
+      const res = await api('POST', `/api/projects/${currentProject}/schema/validate`,
+        { content, auto_sync: false });
+      tab._parsedModels = JSON.parse(JSON.stringify(res.models || []));
+    } catch {
+      tab._parsedModels = [];
+    }
   }
 
   const view = document.createElement('div');
@@ -1234,10 +1279,11 @@ async function showSchemaVisualEditor(tab, container) {
   toolbar.classList.add('schema-view-toolbar');
   toolbar.innerHTML = `
     <span class="sv-title">📐 ${tab.path.split('/').pop()}</span>
-    <button id="sv-btn-code">← Code</button>
-    <button id="sv-btn-save" class="btn-accent" style="padding:3px 12px;font-size:12px;">💾 Sauvegarder</button>
     <span class="sv-status" id="sv-status"></span>`;
   view.appendChild(toolbar);
+
+  // Référence globale pour _autoSaveSchema
+  _svStatusEl = toolbar.querySelector('#sv-status');
 
   // ── Visual panel ────────────────────────────────────────────────────
   const visual = document.createElement('div');
@@ -1247,35 +1293,7 @@ async function showSchemaVisualEditor(tab, container) {
 
   container.appendChild(view);
 
-  renderSchemaModels(visual, parsedModels, tab);
-
-  // ── Events ──────────────────────────────────────────────────────────
-  toolbar.querySelector('#sv-btn-code').onclick = () => {
-    tab._visualMode = false;
-    showTab(tab);
-  };
-
-  toolbar.querySelector('#sv-btn-save').onclick = async () => {
-    const status = toolbar.querySelector('#sv-status');
-    status.textContent = '⏳ Sauvegarde…';
-    status.className = 'sv-status';
-    try {
-      const lematText = modelsToLemat(tab._parsedModels || []);
-      tab.model.setValue(lematText);
-      await api('PUT', `/api/projects/${currentProject}/schema`, {
-        content: lematText, auto_sync: true,
-      });
-      tab.modified = false;
-      renderTabs();
-      await loadDbSection();
-      status.textContent = '✓ Sauvegardé & DB synchronisée';
-      status.className = 'sv-status ok';
-      setTimeout(() => { if (status.textContent.startsWith('✓')) status.textContent = ''; }, 3000);
-    } catch (e) {
-      status.textContent = '✗ ' + e.message;
-      status.className = 'sv-status err';
-    }
-  };
+  renderSchemaModels(visual, tab._parsedModels, tab);
 }
 
 
@@ -1339,6 +1357,7 @@ function renderSchemaModels(container, models, tab) {
       if (!confirm(`Supprimer le modèle "${tab._parsedModels[mi].name}" ?`)) return;
       tab._parsedModels.splice(mi, 1);
       renderSchemaModels(container, tab._parsedModels, tab);
+      _autoSaveSchema(tab);
     } else if (action === 'rename-model') {
       openModelModal(container, tab, mi);
     } else if (action === 'add-field') {
@@ -1348,6 +1367,7 @@ function renderSchemaModels(container, models, tab) {
     } else if (action === 'del-field') {
       tab._parsedModels[mi].fields.splice(fi, 1);
       renderSchemaModels(container, tab._parsedModels, tab);
+      _autoSaveSchema(tab);
     }
   };
 
@@ -1403,6 +1423,7 @@ function openModelModal(container, tab, mi) {
     }
     close();
     renderSchemaModels(container, tab._parsedModels, tab);
+    _autoSaveSchema(tab);  // ← auto-save immédiat
   };
 }
 
@@ -1557,6 +1578,7 @@ function openFieldModal(container, tab, mi, fi) {
     }
     close();
     renderSchemaModels(container, tab._parsedModels, tab);
+    _autoSaveSchema(tab);  // ← auto-save immédiat
   };
 }
 
