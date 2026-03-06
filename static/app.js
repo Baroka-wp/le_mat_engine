@@ -717,7 +717,8 @@ async function openFile(path) {
   if (!tab) {
     const data = await api('GET', `/api/projects/${currentProject}/files/${path}`);
     const model = monaco.editor.createModel(data.content, detectLang(path));
-    tab = { path, modified: false, model };
+    const type = (ext === 'lemat') ? 'lemat' : 'file';
+    tab = { path, modified: false, model, type };
     model.onDidChangeContent(() => { tab.modified = true; renderTabs(); });
     tabs.push(tab);
   }
@@ -730,20 +731,55 @@ async function openFile(path) {
 function showTab(tab) {
   if (tab.type === 'data') { showDataTab(tab); return; }
   const container = document.getElementById('editor-container');
-  container.querySelectorAll('.data-view').forEach(el => el.remove());
+  container.querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'none';
+
+  // Show/hide the Visual toggle button for .lemat files
+  _updateVisualToggle(tab);
+
+  // Schema visual mode for .lemat files
+  if (tab.type === 'lemat' && tab._visualMode) {
+    document.getElementById('monaco-container').style.display = 'none';
+    showSchemaVisualEditor(tab, container);
+    return;
+  }
   document.getElementById('monaco-container').style.display = 'block';
   editor.setModel(tab.model);
   editor.layout();
   editor.focus();
 }
 
+function _updateVisualToggle(tab) {
+  // Inject "🔲 Visual" button into run-toolbar if not already there
+  let btn = document.getElementById('btn-schema-visual');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'btn-schema-visual';
+    btn.title = 'Basculer en éditeur visuel de schéma';
+    const toolbar = document.getElementById('run-toolbar');
+    if (toolbar) toolbar.insertBefore(btn, toolbar.firstChild);
+  }
+  if (tab?.type === 'lemat') {
+    btn.style.display = 'inline-flex';
+    btn.textContent = tab._visualMode ? '< Code' : '🔲 Visual';
+    btn.onclick = () => {
+      tab._visualMode = !tab._visualMode;
+      showTab(tab);
+    };
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
 function showWelcome() {
   document.getElementById('monaco-container').style.display = 'none';
-  document.getElementById('editor-container').querySelectorAll('.data-view').forEach(el => el.remove());
+  document.getElementById('editor-container').querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'flex';
+  // Hide the visual toggle button
+  const svToggle = document.getElementById('btn-schema-visual');
+  if (svToggle) svToggle.style.display = 'none';
 }
 
 function renderTabs() {
@@ -909,31 +945,58 @@ async function showDataTab(tab) {
   document.getElementById('monaco-container').style.display = 'none';
 
   const container = document.getElementById('editor-container');
+  container.querySelectorAll('.data-view, .schema-view').forEach(el => el.remove());
 
-  // Remove existing data view
-  container.querySelectorAll('.data-view').forEach(el => el.remove());
+  const LIMIT = 50;
+  tab._page = tab._page || 0;
+  const offset = tab._page * LIMIT;
 
-  const data = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}?limit=200`);
+  let data;
+  try {
+    data = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}?limit=${LIMIT}&offset=${offset}`);
+  } catch (e) {
+    container.innerHTML = `<div class="data-empty">Erreur: ${e.message}</div>`;
+    return;
+  }
+
+  // Build column metadata from schema
+  const tableInfo = dbSchema?.tables?.find(t => t.name === tab.tableName);
+  const colMeta = {}; // colName → {kind, options, pk, label}
+  if (tableInfo) {
+    tableInfo.columns.forEach(c => {
+      colMeta[c.name] = {
+        kind:    c.kind    || 'simple',
+        options: c.options || [],
+        pk:      !!c.pk,
+        label:   c.label  || c.name,
+      };
+    });
+  }
+  // Detect PK column
+  const pkCol = Object.keys(colMeta).find(k => colMeta[k].pk) || null;
 
   const view = document.createElement('div');
   view.classList.add('data-view');
 
-  // Toolbar
+  // ── Toolbar ────────────────────────────────────────────────────────
   const toolbar = document.createElement('div');
   toolbar.classList.add('data-view-toolbar');
   toolbar.innerHTML = `
     <span>🗄 <strong>${tab.tableName}</strong></span>
-    <span>${data.total} ligne(s)</span>
+    <span class="dv-total">${data.total} ligne(s)</span>
     <div style="flex:1"></div>
-    <button id="dv-refresh">↺ Actualiser</button>`;
+    <button id="dv-add">＋ Nouvelle ligne</button>
+    <button id="dv-refresh">↺</button>`;
   view.appendChild(toolbar);
 
-  // Grid
+  // ── Grid ───────────────────────────────────────────────────────────
   const wrap = document.createElement('div');
   wrap.classList.add('data-grid-wrap');
 
-  if (!data.rows.length) {
-    wrap.innerHTML = '<div class="data-empty">Aucune donnée dans cette table.</div>';
+  if (!data.rows.length && offset === 0) {
+    wrap.innerHTML = '<div class="data-empty">Aucune donnée — cliquez « Nouvelle ligne » pour commencer.</div>';
+  } else if (!data.rows.length) {
+    wrap.innerHTML = '<div class="data-empty">Fin des données.</div>';
   } else {
     const cols = Object.keys(data.rows[0]);
     const table = document.createElement('table');
@@ -941,7 +1004,11 @@ async function showDataTab(tab) {
 
     // Header
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '<th></th></tr>';
+    thead.innerHTML = '<tr>' + cols.map(c => {
+      const meta = colMeta[c] || {};
+      const badge = meta.pk ? ' <span class="sv-field-pk">PK</span>' : '';
+      return `<th>${c}${badge}</th>`;
+    }).join('') + '<th style="width:64px"></th></tr>';
     table.appendChild(thead);
 
     // Rows
@@ -952,44 +1019,583 @@ async function showDataTab(tab) {
       cols.forEach(col => {
         const td = document.createElement('td');
         const val = row[col];
+        const meta = colMeta[col] || {};
         if (val === null || val === undefined) {
-          td.classList.add('null-val');
-          td.textContent = 'null';
+          td.classList.add('null-val'); td.textContent = '—';
+        } else if (meta.pk) {
+          td.classList.add('pk-val'); td.textContent = String(val);
+        } else if (meta.kind === 'bool') {
+          td.innerHTML = val ? '<span class="dv-bool-true">✓</span>' : '<span class="dv-bool-false">✗</span>';
+        } else if (meta.kind === 'select' && val) {
+          td.innerHTML = `<span class="dv-select-tag">${val}</span>`;
         } else {
-          td.textContent = String(val);
+          td.textContent = String(val).slice(0, 120);
         }
         tr.appendChild(td);
       });
       // Actions cell
       const actionsTd = document.createElement('td');
       actionsTd.innerHTML = `<span class="row-actions">
-        <button class="btn-row-del" title="Supprimer">🗑</button>
+        <button class="btn-row-edit" title="Modifier">✎</button>
+        <button class="btn-row-del"  title="Supprimer">🗑</button>
       </span>`;
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
 
-    // Delete row
+    // Edit row
     tbody.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.btn-row-del');
-      if (!btn) return;
-      const tr = btn.closest('tr');
+      const editBtn = e.target.closest('.btn-row-edit');
+      const delBtn  = e.target.closest('.btn-row-del');
+      if (!editBtn && !delBtn) return;
+      const tr = (editBtn || delBtn).closest('tr');
       const rowData = JSON.parse(tr.dataset.rowData);
-      // Find PK value (first column)
-      const pkVal = rowData[cols[0]];
-      await api('DELETE', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`);
-      tr.remove();
-      toast('Ligne supprimée', 'success');
+      if (editBtn) {
+        openRowModal(tab, cols, colMeta, pkCol, rowData, false, () => showDataTab(tab));
+      } else if (delBtn) {
+        const pkVal = pkCol ? rowData[pkCol] : rowData[cols[0]];
+        if (!confirm(`Supprimer la ligne ${pkVal} ?`)) return;
+        await api('DELETE', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`);
+        tr.remove();
+        const totalEl = view.querySelector('.dv-total');
+        if (totalEl) totalEl.textContent = `${parseInt(totalEl.textContent) - 1} ligne(s)`;
+        toast('Ligne supprimée', 'success');
+      }
     });
 
     wrap.appendChild(table);
   }
 
   view.appendChild(wrap);
+
+  // ── Pagination ─────────────────────────────────────────────────────
+  const totalPages = Math.max(1, Math.ceil(data.total / LIMIT));
+  const pagination = document.createElement('div');
+  pagination.classList.add('data-pagination');
+  pagination.innerHTML = `
+    <button id="dv-prev" ${tab._page === 0 ? 'disabled' : ''}>‹ Précédent</button>
+    <span class="page-info">Page ${tab._page + 1} / ${totalPages} &nbsp;—&nbsp; ${data.total} lignes</span>
+    <button id="dv-next" ${offset + LIMIT >= data.total ? 'disabled' : ''}>Suivant ›</button>`;
+  view.appendChild(pagination);
+
   container.appendChild(view);
 
+  // ── Events ─────────────────────────────────────────────────────────
   toolbar.querySelector('#dv-refresh').onclick = () => showDataTab(tab);
+  toolbar.querySelector('#dv-add').onclick = () => {
+    const cols2 = tableInfo ? tableInfo.columns.map(c => c.name) : [];
+    openRowModal(tab, cols2, colMeta, pkCol, null, true, () => showDataTab(tab));
+  };
+  pagination.querySelector('#dv-prev').onclick = () => { tab._page--; showDataTab(tab); };
+  pagination.querySelector('#dv-next').onclick = () => { tab._page++; showDataTab(tab); };
+}
+
+
+// ── Row add/edit modal ────────────────────────────────────────────────
+let _modalCallback = null;
+
+function openRowModal(tab, cols, colMeta, pkCol, rowData, isNew, onDone) {
+  _modalCallback = onDone;
+  let overlay = document.getElementById('row-modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'row-modal-overlay';
+    overlay.className = 'modal-overlay';
+    document.body.appendChild(overlay);
+  }
+
+  const editableCols = isNew
+    ? cols.filter(c => !(colMeta[c]?.pk && colMeta[c]?.kind !== 'bool')) // exclude PK on new
+    : cols;
+
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">
+        <span>${isNew ? 'Nouvelle ligne' : 'Modifier'} — ${tab.tableName}</span>
+        <button id="row-modal-close">×</button>
+      </div>
+      <form id="row-modal-form">
+        ${editableCols.map(col => {
+          const meta = colMeta[col] || {};
+          const val = rowData ? rowData[col] : '';
+          return buildRowField(col, meta, val, isNew);
+        }).join('')}
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" id="row-modal-cancel">Annuler</button>
+          <button type="submit" class="btn-accent">${isNew ? 'Créer' : 'Sauvegarder'}</button>
+        </div>
+      </form>
+    </div>`;
+
+  overlay.classList.remove('hidden');
+
+  overlay.querySelector('#row-modal-close').onclick  = closeRowModal;
+  overlay.querySelector('#row-modal-cancel').onclick = closeRowModal;
+  overlay.onclick = (e) => { if (e.target === overlay) closeRowModal(); };
+
+  overlay.querySelector('#row-modal-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = {};
+    editableCols.forEach(col => {
+      const meta = colMeta[col] || {};
+      if (meta.pk && isNew) return; // let DB assign PK
+      const rawVal = fd.get(col);
+      if (meta.kind === 'bool') {
+        body[col] = overlay.querySelector(`[name="${col}"]`)?.checked ? 1 : 0;
+      } else if (rawVal === '' || rawVal === null) {
+        body[col] = null;
+      } else if (meta.kind === 'number' || col.toLowerCase() === 'id' || meta.pk) {
+        body[col] = Number(rawVal) || rawVal;
+      } else {
+        body[col] = rawVal;
+      }
+    });
+    try {
+      if (isNew) {
+        await api('POST', `/api/projects/${currentProject}/data/${tab.tableName}`, body);
+        toast('Ligne créée ✓', 'success');
+      } else {
+        const pkVal = pkCol ? rowData[pkCol] : rowData[cols[0]];
+        await api('PUT', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`, body);
+        toast('Ligne mise à jour ✓', 'success');
+      }
+      closeRowModal();
+      if (_modalCallback) { _modalCallback(); _modalCallback = null; }
+    } catch(err) {
+      toast(err.message, 'error');
+    }
+  };
+}
+
+function buildRowField(col, meta, val, isNew) {
+  const typeHint = meta.label || meta.kind || 'Text';
+  const label = `<label>${col} <span class="field-type-hint">${typeHint}</span></label>`;
+
+  if (meta.pk && isNew) return ''; // auto-assigned
+
+  if (meta.kind === 'bool') {
+    const checked = val ? 'checked' : '';
+    return `<div class="modal-field">${label}
+      <div class="checkbox-row">
+        <input type="checkbox" name="${col}" ${checked}>
+        <span style="font-size:13px;color:var(--muted)">Oui / Non</span>
+      </div></div>`;
+  }
+  if (meta.kind === 'select' && meta.options?.length) {
+    const opts = meta.options.map(o =>
+      `<option value="${o}" ${o === val ? 'selected' : ''}>${o}</option>`
+    ).join('');
+    return `<div class="modal-field">${label}
+      <select name="${col}"><option value="">—</option>${opts}</select></div>`;
+  }
+  if (meta.kind === 'textarea') {
+    return `<div class="modal-field">${label}
+      <textarea name="${col}">${val ?? ''}</textarea></div>`;
+  }
+  const inputType = {
+    date: 'date', datetime: 'datetime-local', email: 'email',
+    url: 'url', color: 'color', number: 'number',
+  }[meta.kind] || 'text';
+  const valAttr = (val !== null && val !== undefined && val !== '') ? ` value="${String(val).replace(/"/g,'&quot;')}"` : '';
+  return `<div class="modal-field">${label}
+    <input type="${inputType}" name="${col}"${valAttr} placeholder="${meta.label || col}"></div>`;
+}
+
+function closeRowModal() {
+  const overlay = document.getElementById('row-modal-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+
+// ── Schema Visual Editor ──────────────────────────────────────────────
+
+async function showSchemaVisualEditor(tab, container) {
+  container.querySelectorAll('.schema-view').forEach(el => el.remove());
+
+  // Parse schema from Monaco content via backend validate endpoint
+  let parsedModels = [];
+  try {
+    const content = tab.model.getValue();
+    const res = await api('POST', `/api/projects/${currentProject}/schema/validate`,
+      { content, auto_sync: false });
+    parsedModels = res.models || [];
+    tab._parsedModels = JSON.parse(JSON.stringify(parsedModels)); // deep copy
+  } catch (e) {
+    parsedModels = tab._parsedModels || [];
+  }
+
+  const view = document.createElement('div');
+  view.classList.add('schema-view');
+
+  // ── Toolbar ─────────────────────────────────────────────────────────
+  const toolbar = document.createElement('div');
+  toolbar.classList.add('schema-view-toolbar');
+  toolbar.innerHTML = `
+    <span class="sv-title">📐 ${tab.path.split('/').pop()}</span>
+    <button id="sv-btn-code">← Code</button>
+    <button id="sv-btn-save" class="btn-accent" style="padding:3px 12px;font-size:12px;">💾 Sauvegarder</button>
+    <span class="sv-status" id="sv-status"></span>`;
+  view.appendChild(toolbar);
+
+  // ── Visual panel ────────────────────────────────────────────────────
+  const visual = document.createElement('div');
+  visual.classList.add('schema-visual-panel');
+  visual.id = 'sv-visual-panel';
+  view.appendChild(visual);
+
+  container.appendChild(view);
+
+  renderSchemaModels(visual, parsedModels, tab);
+
+  // ── Events ──────────────────────────────────────────────────────────
+  toolbar.querySelector('#sv-btn-code').onclick = () => {
+    tab._visualMode = false;
+    showTab(tab);
+  };
+
+  toolbar.querySelector('#sv-btn-save').onclick = async () => {
+    const status = toolbar.querySelector('#sv-status');
+    status.textContent = '⏳ Sauvegarde…';
+    status.className = 'sv-status';
+    try {
+      const lematText = modelsToLemat(tab._parsedModels || []);
+      tab.model.setValue(lematText);
+      await api('PUT', `/api/projects/${currentProject}/schema`, {
+        content: lematText, auto_sync: true,
+      });
+      tab.modified = false;
+      renderTabs();
+      await loadDbSection();
+      status.textContent = '✓ Sauvegardé & DB synchronisée';
+      status.className = 'sv-status ok';
+      setTimeout(() => { if (status.textContent.startsWith('✓')) status.textContent = ''; }, 3000);
+    } catch (e) {
+      status.textContent = '✗ ' + e.message;
+      status.className = 'sv-status err';
+    }
+  };
+}
+
+
+function renderSchemaModels(container, models, tab) {
+  container.innerHTML = '';
+  tab._parsedModels = tab._parsedModels || models;
+
+  (tab._parsedModels).forEach((model, mi) => {
+    const card = document.createElement('div');
+    card.classList.add('sv-model-card');
+    card.innerHTML = `
+      <div class="sv-model-header">
+        <span class="sv-model-name">⬛ ${model.name}</span>
+        <div class="sv-model-actions">
+          <button title="Renommer" data-action="rename-model" data-mi="${mi}">✎</button>
+          <button title="Supprimer" class="danger" data-action="del-model" data-mi="${mi}">✕</button>
+        </div>
+      </div>
+      <div class="sv-field-list" id="sv-fields-${mi}"></div>
+      <button class="sv-add-field" data-action="add-field" data-mi="${mi}">＋ Ajouter un champ</button>`;
+    container.appendChild(card);
+
+    const fieldList = card.querySelector(`#sv-fields-${mi}`);
+    (model.fields || []).forEach((field, fi) => {
+      const row = document.createElement('div');
+      row.classList.add('sv-field-row');
+      const pkBadge = field.pk || field.primary_key
+        ? '<span class="sv-field-pk">PK</span>' : '';
+      const nnBadge = (field.not_null || field.notnull) && !field.pk
+        ? '<span class="sv-field-badge">NN</span>' : '';
+      const typeLabel = field.label || field.kind || field.lemat_type || field.sql_type || '?';
+      const typeDetail = field.options?.length ? `(${field.options.slice(0,3).join(', ')}${field.options.length>3?'…':''})` :
+        field.relationModel ? `→ ${field.relationModel}` : '';
+      row.innerHTML = `
+        <span class="sv-field-name">${field.name}</span>
+        <span class="sv-field-type">${typeLabel} ${typeDetail}</span>
+        ${pkBadge}${nnBadge}
+        <span class="sv-field-actions">
+          <button title="Modifier" data-action="edit-field" data-mi="${mi}" data-fi="${fi}">✎</button>
+          <button title="Supprimer" class="danger" data-action="del-field" data-mi="${mi}" data-fi="${fi}">✕</button>
+        </span>`;
+      fieldList.appendChild(row);
+    });
+  });
+
+  // Add model button
+  const addModelBtn = document.createElement('button');
+  addModelBtn.className = 'sv-add-model';
+  addModelBtn.textContent = '＋ Nouveau modèle';
+  container.appendChild(addModelBtn);
+
+  // ── Delegation handler ─────────────────────────────────────────────
+  container.onclick = (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const mi = parseInt(btn.dataset.mi);
+    const fi = parseInt(btn.dataset.fi);
+
+    if (action === 'del-model') {
+      if (!confirm(`Supprimer le modèle "${tab._parsedModels[mi].name}" ?`)) return;
+      tab._parsedModels.splice(mi, 1);
+      renderSchemaModels(container, tab._parsedModels, tab);
+    } else if (action === 'rename-model') {
+      openModelModal(container, tab, mi);
+    } else if (action === 'add-field') {
+      openFieldModal(container, tab, mi, -1);
+    } else if (action === 'edit-field') {
+      openFieldModal(container, tab, mi, fi);
+    } else if (action === 'del-field') {
+      tab._parsedModels[mi].fields.splice(fi, 1);
+      renderSchemaModels(container, tab._parsedModels, tab);
+    }
+  };
+
+  addModelBtn.onclick = () => openModelModal(container, tab, -1);
+}
+
+
+function openModelModal(container, tab, mi) {
+  const isNew = mi === -1;
+  const existing = isNew ? null : tab._parsedModels[mi];
+  let overlay = document.getElementById('schema-modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'schema-modal-overlay';
+    overlay.className = 'modal-overlay';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">
+        <span>${isNew ? 'Nouveau modèle' : `Renommer "${existing.name}"`}</span>
+        <button id="sm-close">×</button>
+      </div>
+      <div class="modal-field">
+        <label>Nom du modèle</label>
+        <input id="sm-name" type="text" value="${existing?.name || ''}" placeholder="Ex: Article, User, Product…">
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="sm-cancel">Annuler</button>
+        <button class="btn-accent" id="sm-ok">${isNew ? 'Créer' : 'Renommer'}</button>
+      </div>
+    </div>`;
+  overlay.classList.remove('hidden');
+
+  const nameInput = overlay.querySelector('#sm-name');
+  nameInput.focus(); nameInput.select();
+
+  const close = () => { overlay.classList.add('hidden'); };
+  overlay.querySelector('#sm-close').onclick = close;
+  overlay.querySelector('#sm-cancel').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  overlay.querySelector('#sm-ok').onclick = () => {
+    const name = nameInput.value.trim();
+    if (!name) return;
+    if (isNew) {
+      tab._parsedModels.push({ name, fields: [
+        { name: 'id', lemat_type: 'int', sql_type: 'INTEGER',
+          kind: 'number', label: 'Int', pk: true, primary_key: true, autoincrement: true }
+      ]});
+    } else {
+      tab._parsedModels[mi].name = name;
+    }
+    close();
+    renderSchemaModels(container, tab._parsedModels, tab);
+  };
+}
+
+
+// SIMPLE_TYPES list (mirrors model_parser.SIMPLE_TYPES)
+const LEMAT_SIMPLE_TYPES = [
+  'Text','Textarea','Int','Number','Bool','Date','DateTime','Email','URL','File','Color','JSON'
+];
+
+function openFieldModal(container, tab, mi, fi) {
+  const isNew = fi === -1;
+  const existing = isNew ? null : tab._parsedModels[mi].fields[fi];
+  const modelNames = tab._parsedModels.map(m => m.name);
+
+  let overlay = document.getElementById('field-modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'field-modal-overlay';
+    overlay.className = 'modal-overlay';
+    document.body.appendChild(overlay);
+  }
+
+  const curType = existing
+    ? (existing.kind === 'select' ? 'Select'
+    : existing.kind === 'relation' ? 'Relation'
+    : existing.label || existing.lemat_type || 'Text')
+    : 'Text';
+
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">
+        <span>${isNew ? 'Nouveau champ' : `Modifier "${existing.name}"`}</span>
+        <button id="fm-close">×</button>
+      </div>
+      <div class="modal-field">
+        <label>Nom du champ</label>
+        <input id="fm-name" type="text" value="${existing?.name || ''}" placeholder="ex: title, email, price…">
+      </div>
+      <div class="modal-field">
+        <label>Type</label>
+        <div class="field-type-grid" id="fm-type-grid">
+          ${LEMAT_SIMPLE_TYPES.map(t =>
+            `<div class="field-type-option ${t === curType ? 'active' : ''}" data-type="${t}">${t}</div>`
+          ).join('')}
+          <div class="field-type-option ${curType === 'Select' ? 'active' : ''}" data-type="Select">Select</div>
+          <div class="field-type-option ${curType === 'Relation' ? 'active' : ''}" data-type="Relation">Relation</div>
+        </div>
+      </div>
+      <div id="fm-select-opts" class="field-select-opts" style="display:none">
+        <div class="modal-field">
+          <label>Options (une par ligne)</label>
+          <textarea id="fm-select-values" placeholder="option1\noption2\noption3">${existing?.options?.join('\n') || ''}</textarea>
+        </div>
+      </div>
+      <div id="fm-relation-target" class="field-relation-model" style="display:none">
+        <div class="modal-field">
+          <label>Modèle cible</label>
+          <select id="fm-rel-model">
+            ${modelNames.map(n => `<option value="${n}" ${existing?.relationModel === n ? 'selected':''}>${n}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-field" style="display:flex;gap:16px;margin-top:4px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="fm-pk" ${existing?.pk || existing?.primary_key ? 'checked':''}>
+          @id (PK)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="fm-unique" ${existing?.unique ? 'checked':''}>
+          @unique
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="fm-notnull" ${existing?.not_null || existing?.notnull ? 'checked':''}>
+          @notnull
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="fm-cancel">Annuler</button>
+        <button class="btn-accent" id="fm-ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>
+      </div>
+    </div>`;
+  overlay.classList.remove('hidden');
+
+  let selectedType = curType;
+  const grid = overlay.querySelector('#fm-type-grid');
+  const selectOptsDiv  = overlay.querySelector('#fm-select-opts');
+  const relationDiv    = overlay.querySelector('#fm-relation-target');
+
+  const updateTypeUI = (t) => {
+    selectedType = t;
+    grid.querySelectorAll('.field-type-option').forEach(el =>
+      el.classList.toggle('active', el.dataset.type === t));
+    selectOptsDiv.style.display  = t === 'Select'   ? 'block' : 'none';
+    relationDiv.style.display    = t === 'Relation' ? 'block' : 'none';
+  };
+  updateTypeUI(curType);
+
+  grid.addEventListener('click', (e) => {
+    const opt = e.target.closest('.field-type-option');
+    if (opt) updateTypeUI(opt.dataset.type);
+  });
+
+  const nameInput = overlay.querySelector('#fm-name');
+  nameInput.focus(); if (!isNew) nameInput.select();
+
+  const close = () => { overlay.classList.add('hidden'); };
+  overlay.querySelector('#fm-close').onclick  = close;
+  overlay.querySelector('#fm-cancel').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  overlay.querySelector('#fm-ok').onclick = () => {
+    const name = nameInput.value.trim();
+    if (!name) return;
+
+    const pk       = overlay.querySelector('#fm-pk').checked;
+    const unique   = overlay.querySelector('#fm-unique').checked;
+    const notnull  = overlay.querySelector('#fm-notnull').checked;
+
+    let field = { name };
+    if (selectedType === 'Select') {
+      const opts = overlay.querySelector('#fm-select-values').value
+        .split('\n').map(s => s.trim()).filter(Boolean);
+      field = { ...field, lemat_type: 'select', kind: 'select', sql_type: 'TEXT',
+                label: 'Select', options: opts };
+    } else if (selectedType === 'Relation') {
+      const relModel = overlay.querySelector('#fm-rel-model')?.value || '';
+      field = { ...field, lemat_type: 'relation', kind: 'relation', sql_type: 'INTEGER',
+                label: 'Relation', relationModel: relModel };
+    } else {
+      const typeMap = {
+        'Text':'text','Textarea':'textarea','Int':'int','Number':'number',
+        'Bool':'bool','Date':'date','DateTime':'datetime','Email':'email',
+        'URL':'url','File':'file','Color':'color','JSON':'json',
+      };
+      const lt = typeMap[selectedType] || 'text';
+      const sqlMap = {
+        'int':'INTEGER','number':'REAL','bool':'INTEGER',
+        'date':'TEXT','datetime':'TEXT','json':'TEXT',
+      };
+      const st = sqlMap[lt] || 'TEXT';
+      field = { ...field, lemat_type: lt, kind: lt, sql_type: st, label: selectedType };
+    }
+
+    if (pk)      { field.pk = true; field.primary_key = true; }
+    if (unique)  { field.unique = true; }
+    if (notnull) { field.not_null = true; field.notnull = true; }
+
+    if (isNew) {
+      tab._parsedModels[mi].fields.push(field);
+    } else {
+      tab._parsedModels[mi].fields[fi] = field;
+    }
+    close();
+    renderSchemaModels(container, tab._parsedModels, tab);
+  };
+}
+
+
+// Serialize model array → .lemat DSL string
+function modelsToLemat(models) {
+  if (!models || !models.length) return '';
+  const lines = [];
+  models.forEach(model => {
+    lines.push(`model ${model.name} {`);
+    (model.fields || []).forEach(f => {
+      const mods = [];
+      if (f.pk || f.primary_key)   mods.push('@id');
+      if (f.autoincrement)          mods.push('@autoincrement');
+      if (f.unique)                 mods.push('@unique');
+      if (f.not_null || f.notnull) mods.push('@notnull');
+
+      let typeStr;
+      if (f.kind === 'select' || f.lemat_type === 'select') {
+        typeStr = `Select(${(f.options || []).join(', ')})`;
+      } else if (f.kind === 'relation' || f.lemat_type === 'relation') {
+        typeStr = `Relation(${f.relationModel || ''})`;
+      } else {
+        const labelMap = {
+          'text':'Text','textarea':'Textarea','int':'Int','integer':'Int',
+          'number':'Number','real':'Number','bool':'Bool','boolean':'Bool',
+          'date':'Date','datetime':'DateTime','timestamp':'DateTime',
+          'email':'Email','url':'URL','file':'File','color':'Color','json':'JSON',
+        };
+        typeStr = f.label || labelMap[f.lemat_type] || labelMap[f.kind] || 'Text';
+      }
+
+      const modStr = mods.length ? mods.join(' ') + ' ' : '';
+      lines.push(`  ${f.name.padEnd(16)}${modStr}${typeStr}`);
+    });
+    lines.push('}');
+    lines.push('');
+  });
+  return lines.join('\n').trimEnd() + '\n';
 }
 
 // ── Run ───────────────────────────────────────────────────────────────
