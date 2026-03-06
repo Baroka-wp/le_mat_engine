@@ -258,7 +258,12 @@ def parse(source: str) -> SchemaDef:
 
 
 def _parse_field(line: str) -> Optional[FieldDef]:
-    """Parse a single field line into a FieldDef."""
+    """Parse a single field line into a FieldDef.
+
+    Supporte les deux ordres possibles (tolérance rétro-compatible) :
+      - Ordre canonique  : name Type @dec1 @dec2   (ex: id Int @id @autoincrement)
+      - Ordre legacy     : name @dec1 @dec2 Type   (ex: id @id @autoincrement Int)
+    """
     # Field name is always the first token
     m = re.match(r'^(\w+)\s+', line)
     if not m:
@@ -267,10 +272,12 @@ def _parse_field(line: str) -> Optional[FieldDef]:
     rest = line[m.end():]
 
     # ── Select(opt1, opt2, ...) ───────────────────────────────────────────────
-    sm = re.match(r'[Ss]elect\s*\(([^)]+)\)', rest)
+    # re.search pour trouver Select(...) même précédé de décos (@notnull, etc.)
+    sm = re.search(r'[Ss]elect\s*\(([^)]+)\)', rest)
     if sm:
         options = [o.strip().strip("'\"") for o in sm.group(1).split(",") if o.strip()]
-        decorators = rest[sm.end():]
+        # Les décorateurs = tout ce qui n'est pas le bloc Select(...)
+        decorators = rest[:sm.start()] + rest[sm.end():]
         f = FieldDef(
             name=name,
             sql_type="TEXT",
@@ -282,11 +289,12 @@ def _parse_field(line: str) -> Optional[FieldDef]:
         return f
 
     # ── Relation(ModelName) ───────────────────────────────────────────────────
-    rm = re.match(r'[Rr]elation\s*\((\w+)(?:\.(\w+))?\)', rest)
+    # re.search pour trouver Relation(...) même précédé de décos
+    rm = re.search(r'[Rr]elation\s*\((\w+)(?:\.(\w+))?\)', rest)
     if rm:
         target_model = rm.group(1)
         target_field = rm.group(2) or "id"
-        decorators = rest[rm.end():]
+        decorators = rest[:rm.start()] + rest[rm.end():]
         f = FieldDef(
             name=name,
             sql_type="INTEGER",
@@ -299,12 +307,19 @@ def _parse_field(line: str) -> Optional[FieldDef]:
         return f
 
     # ── Simple types ──────────────────────────────────────────────────────────
-    tm = re.match(r'(\w+)', rest)
+    # Tolérance ordre legacy : si rest commence par des @decs, les sauter pour
+    # trouver le mot-type (ex: "@id @autoincrement Int" → raw_type = "int")
+    rest_for_type = re.sub(r'^(\s*@\w+(?:\([^)]*\))?\s*)+', ' ', rest).strip()
+    tm = re.match(r'(\w+)', rest_for_type) if rest_for_type else None
+    if not tm:
+        # Fallback : essayer directement sur rest (format canonique sans décos)
+        tm = re.match(r'(\w+)', rest)
     if not tm:
         return None
 
     raw_type = tm.group(1).lower()
-    decorators = rest[tm.end():]
+    # Les décorateurs = tout rest (les @-tags peuvent être avant ou après le type)
+    decorators = rest
     sql_type = SQLITE_TYPES.get(raw_type, "TEXT")
     kind = TYPE_KIND.get(raw_type, "simple")
     if raw_type in ("file",):
