@@ -101,6 +101,9 @@ async def startup():
     registry = ProjectRegistry(BASE_DIR)
     app.state.registry = registry
 
+    # Expose broadcast_reload aux routers (live-reload après écriture de fichier)
+    app.state.broadcast_reload = broadcast_reload
+
     # Scheduler Cron
     _scheduler.start()
     _reload_all_crons()

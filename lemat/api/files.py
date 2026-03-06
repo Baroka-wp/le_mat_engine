@@ -56,12 +56,29 @@ def read_file(project: str, filepath: str,
     if path.is_dir():
         raise HTTPException(400, "Path is a directory")
 
+    # Le frontend Monaco attend {"path": ..., "content": ...}
+    # Les fichiers binaires (images, fonts…) sont servis en FileResponse
+    _TEXT_EXTS = {
+        ".html", ".htm", ".css", ".js", ".mjs", ".ts", ".jsx", ".tsx",
+        ".json", ".md", ".txt", ".py", ".lemat", ".sh", ".yaml", ".yml",
+        ".xml", ".svg", ".csv", ".sql", ".env", ".gitignore", ".toml",
+        ".ini", ".cfg", ".conf", ".rb", ".php", ".go", ".rs", ".java",
+        ".c", ".cpp", ".h", ".cs", ".swift",
+    }
+    if path.suffix.lower() in _TEXT_EXTS or path.suffix == "":
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            return {"path": filepath, "content": content}
+        except Exception:
+            pass
+
     return FileResponse(path)
 
 
 @router.put("/{project}/files/{filepath:path}")
 async def write_file(project: str, filepath: str,
                      body: FileWriteBody,
+                     request: Request,
                      reg: ProjectRegistry = Depends(get_registry)):
     rt = reg.require(project)
     try:
@@ -72,11 +89,16 @@ async def write_file(project: str, filepath: str,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8")
 
-    # Si c'est un fichier de schéma ou de config → invalider le cache
-    if path.name.endswith(".lemat"):
+    # Invalider le cache si c'est un fichier LEMAT
+    if path.suffix == ".lemat":
         rt.reload_schema()
         if path.name == "config.lemat":
             rt.reload_config()
+
+    # Déclencher le live-reload dans le navigateur
+    _broadcast = getattr(request.app.state, "broadcast_reload", None)
+    if _broadcast:
+        await _broadcast(project)
 
     return {"saved": True, "path": filepath}
 
