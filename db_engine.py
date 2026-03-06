@@ -1,7 +1,7 @@
 """
-LEMAT — DB Engine  (v2 — Phase 1: Data Layer)
+LEMAT — DB Engine  (v3 — Phase 1: Data Layer)
 =============================================
-SQLite CRUD wrapper + smart migration (CREATE + ALTER TABLE).
+SQLite CRUD wrapper + full migration (CREATE / ALTER / DROP TABLE / rebuild columns).
 """
 
 import sqlite3
@@ -47,19 +47,24 @@ def migrate(db_path: Path, sql_statements: list[str]) -> None:
 
 def smart_migrate(db_path: Path, schema: "model_parser.SchemaDef") -> dict:
     """
-    Full schema sync:
-    1. CREATE TABLE IF NOT EXISTS for each model (new tables)
-    2. ALTER TABLE ADD COLUMN for new fields on existing tables
-    Returns a summary dict.
+    Full schema sync — migration destructive incluse :
+    1. DROP TABLE pour les tables absentes du schéma
+    2. CREATE TABLE IF NOT EXISTS pour les nouveaux modèles
+    3. ALTER TABLE ADD COLUMN pour les nouveaux champs
+    4. Reconstruction de la table (copie des données) si des colonnes ont été supprimées
+    Retourne un dict résumé avec created / altered / dropped / rebuilt.
     """
     import model_parser as mp  # local import to avoid circular at module level
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    created, altered = [], []
+    created, altered, dropped, rebuilt = [], [], [], []
+
+    # Noms des modèles valides (non vides) du schéma
+    schema_model_names = {m.name for m in schema.models if m.fields}
 
     with _connect(db_path) as conn:
-        # Existing tables + their columns
-        existing_tables = {
+        # Tables existantes → {name: [colname_lower, ...]}
+        existing_tables: dict[str, list[str]] = {
             row["name"]: [
                 c["name"].lower()
                 for c in conn.execute(f'PRAGMA table_info("{row["name"]}")').fetchall()
@@ -69,36 +74,79 @@ def smart_migrate(db_path: Path, schema: "model_parser.SchemaDef") -> dict:
             ).fetchall()
         }
 
+        # ── 1. DROP tables absentes du schéma ─────────────────────────────────
+        for table_name in list(existing_tables.keys()):
+            if table_name not in schema_model_names:
+                conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+                dropped.append(table_name)
+
+        # ── 2 & 3 & 4. CREATE / ALTER / REBUILD ───────────────────────────────
         for model in schema.models:
-            # Skip empty models (no fields) — would generate invalid SQL
             if not model.fields:
-                continue
+                continue  # modèle vide → SQL invalide, on ignore
 
             table_sql = mp._model_to_sql(model)
+            schema_cols_lower = {f.name.lower() for f in model.fields}
 
             if model.name not in existing_tables:
-                # New table
+                # Nouvelle table
                 conn.execute(table_sql)
                 created.append(model.name)
+
             else:
-                # Existing table — add missing columns only
                 existing_cols = set(existing_tables[model.name])
-                for f in model.fields:
-                    if f.name.lower() not in existing_cols:
-                        col_def = f'"{f.name}" {f.sql_type}'
-                        if f.default is not None:
-                            col_def += f" DEFAULT {f.default}"
-                        try:
-                            conn.execute(
-                                f'ALTER TABLE "{model.name}" ADD COLUMN {col_def}'
-                            )
-                            altered.append(f"{model.name}.{f.name}")
-                        except sqlite3.OperationalError:
-                            pass  # column already exists
+
+                # Colonnes supprimées (présentes en DB mais absentes du schéma)
+                # On exclut 'rowid' qui est implicite
+                removed_cols = existing_cols - schema_cols_lower - {"rowid"}
+
+                if removed_cols:
+                    # Reconstruction : nouvelle table avec le bon schéma,
+                    # copie des données des colonnes survivantes, puis swap
+                    surviving = [
+                        f.name for f in model.fields
+                        if f.name.lower() in existing_cols
+                    ]
+                    tmp = f"_lemat_tmp_{model.name}"
+
+                    # Créer la table temporaire avec le nouveau schéma
+                    tmp_sql = table_sql.replace(
+                        f'CREATE TABLE IF NOT EXISTS "{model.name}"',
+                        f'CREATE TABLE "{tmp}"',
+                        1,
+                    )
+                    conn.execute(tmp_sql)
+
+                    # Copier les données des colonnes communes
+                    if surviving:
+                        cols_sql = ", ".join(f'"{c}"' for c in surviving)
+                        conn.execute(
+                            f'INSERT INTO "{tmp}" ({cols_sql}) '
+                            f'SELECT {cols_sql} FROM "{model.name}"'
+                        )
+
+                    conn.execute(f'DROP TABLE "{model.name}"')
+                    conn.execute(f'ALTER TABLE "{tmp}" RENAME TO "{model.name}"')
+                    rebuilt.append(model.name)
+
+                else:
+                    # Ajout de nouvelles colonnes uniquement
+                    for f in model.fields:
+                        if f.name.lower() not in existing_cols:
+                            col_def = f'"{f.name}" {f.sql_type}'
+                            if f.default is not None:
+                                col_def += f" DEFAULT {f.default}"
+                            try:
+                                conn.execute(
+                                    f'ALTER TABLE "{model.name}" ADD COLUMN {col_def}'
+                                )
+                                altered.append(f"{model.name}.{f.name}")
+                            except sqlite3.OperationalError:
+                                pass  # colonne déjà existante
 
         conn.commit()
 
-    return {"created": created, "altered": altered}
+    return {"created": created, "altered": altered, "dropped": dropped, "rebuilt": rebuilt}
 
 
 def list_tables(db_path: Path) -> list[str]:

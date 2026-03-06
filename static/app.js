@@ -1229,17 +1229,25 @@ async function _autoSaveSchema(tab) {
 
   // 3. Sauvegarder sur le serveur + synchroniser la DB
   try {
-    await api('PUT', `/api/projects/${currentProject}/schema`, {
+    const result = await api('PUT', `/api/projects/${currentProject}/schema`, {
       content: lematText, auto_sync: true,
     });
     await loadDbSection();
     if (_svStatusEl) {
-      _svStatusEl.textContent = '✓ Sauvegardé';
+      // Construire un message résumé de la migration
+      const parts = [];
+      const mig = result?.migration || {};
+      if (mig.created?.length)  parts.push(`+${mig.created.length} table${mig.created.length > 1 ? 's' : ''}`);
+      if (mig.dropped?.length)  parts.push(`−${mig.dropped.length} table${mig.dropped.length > 1 ? 's' : ''}`);
+      if (mig.altered?.length)  parts.push(`${mig.altered.length} col.`);
+      if (mig.rebuilt?.length)  parts.push(`↺ ${mig.rebuilt.join(', ')}`);
+      const detail = parts.length ? ` (${parts.join(' · ')})` : '';
+      _svStatusEl.textContent = `✓ Sauvegardé${detail}`;
       _svStatusEl.className = 'sv-status ok';
       setTimeout(() => {
-        if (_svStatusEl && _svStatusEl.textContent === '✓ Sauvegardé')
+        if (_svStatusEl && _svStatusEl.textContent.startsWith('✓'))
           _svStatusEl.textContent = '';
-      }, 2500);
+      }, 3000);
     }
   } catch (e) {
     if (_svStatusEl) {

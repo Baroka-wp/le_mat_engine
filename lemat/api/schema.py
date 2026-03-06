@@ -149,12 +149,14 @@ def sync_schema(project: str, reg: ProjectRegistry = Depends(get_registry)):
 
     tables = db_engine.list_tables(db_path)
     return {
-        "synced":  True,
-        "db":      str(db_path.relative_to(rt.project_dir)),
-        "tables":  tables,
-        "created": summary["created"],
-        "altered": summary["altered"],
-        "message": _sync_message(summary),
+        "synced":   True,
+        "db":       str(db_path.relative_to(rt.project_dir)),
+        "tables":   tables,
+        "created":  summary["created"],
+        "altered":  summary["altered"],
+        "dropped":  summary.get("dropped", []),
+        "rebuilt":  summary.get("rebuilt", []),
+        "message":  _sync_message(summary),
     }
 
 
@@ -206,8 +208,12 @@ def get_deploy_sdk(project: str, reg: ProjectRegistry = Depends(get_registry)):
 
 def _sync_message(summary: dict) -> str:
     parts = []
-    if summary["created"]:
+    if summary.get("created"):
         parts.append(f"Tables créées : {', '.join(summary['created'])}")
-    if summary["altered"]:
+    if summary.get("altered"):
         parts.append(f"Colonnes ajoutées : {', '.join(summary['altered'])}")
+    if summary.get("dropped"):
+        parts.append(f"Tables supprimées : {', '.join(summary['dropped'])}")
+    if summary.get("rebuilt"):
+        parts.append(f"Tables reconstruites : {', '.join(summary['rebuilt'])}")
     return " | ".join(parts) if parts else "DB déjà à jour"
