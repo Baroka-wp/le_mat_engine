@@ -910,12 +910,26 @@ async function loadDbSection() {
 
 async function syncSchema() {
   if (!currentProject) return;
+  const btn = document.getElementById('btn-sync-db');
+  const origHtml = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   try {
     const res = await api('POST', `/api/projects/${currentProject}/schema/sync`);
-    toast(`✓ ${res.message}`, 'success');
     await loadDbSection();
+    // Construire un résumé lisible
+    const parts = [];
+    if (res.created?.length)  parts.push(`+${res.created.length} table${res.created.length > 1 ? 's' : ''}`);
+    if (res.dropped?.length)  parts.push(`−${res.dropped.length} table${res.dropped.length > 1 ? 's' : ''}`);
+    if (res.altered?.length)  parts.push(`${res.altered.length} col.`);
+    if (res.rebuilt?.length)  parts.push(`↺ ${res.rebuilt.join(', ')}`);
+    const detail = parts.length ? ` (${parts.join(' · ')})` : '';
+    toast(`⚡ ${res.message}${detail}`, parts.length ? 'success' : 'info');
+    // Scroll la section DB en vue
+    document.getElementById('db-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
-    toast(e.message, 'error');
+    toast('✗ ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
   }
 }
 
@@ -1215,8 +1229,13 @@ function closeRowModal() {
 async function _autoSaveSchema(tab) {
   if (!currentProject || !tab._parsedModels) return;
 
-  // 1. Mettre Monaco à jour immédiatement (protection anti perte de données)
-  const lematText = modelsToLemat(tab._parsedModels);
+  // 1. Extraire le nom de DB depuis le contenu actuel (pour ne pas le perdre)
+  const currentContent = tab.model.getValue();
+  const dbMatch = currentContent.match(/^\s*database\s+"([^"]+)"/m);
+  const dbName = dbMatch ? dbMatch[1] : null;
+
+  // 2. Mettre Monaco à jour immédiatement (protection anti perte de données)
+  const lematText = modelsToLemat(tab._parsedModels, dbName);
   tab.model.setValue(lematText);
   tab.modified = false;
   renderTabs();
@@ -1592,18 +1611,21 @@ function openFieldModal(container, tab, mi, fi) {
 
 
 // Serialize model array → .lemat DSL string
-function modelsToLemat(models) {
+// database : optionnel — nom du fichier DB (ex: "lamed.db") à préserver en tête de fichier
+function modelsToLemat(models, database) {
   if (!models || !models.length) return '';
   const lines = [];
+
+  // Préserver la déclaration database si fournie
+  if (database) {
+    lines.push(`database "${database}"`);
+    lines.push('');
+  }
+
   models.forEach(model => {
     lines.push(`model ${model.name} {`);
     (model.fields || []).forEach(f => {
-      const mods = [];
-      if (f.pk || f.primary_key)   mods.push('@id');
-      if (f.autoincrement)          mods.push('@autoincrement');
-      if (f.unique)                 mods.push('@unique');
-      if (f.not_null || f.notnull) mods.push('@notnull');
-
+      // ── Type string ────────────────────────────────────────────────
       let typeStr;
       if (f.kind === 'select' || f.lemat_type === 'select') {
         typeStr = `Select(${(f.options || []).join(', ')})`;
@@ -1619,8 +1641,15 @@ function modelsToLemat(models) {
         typeStr = f.label || labelMap[f.lemat_type] || labelMap[f.kind] || 'Text';
       }
 
-      const modStr = mods.length ? mods.join(' ') + ' ' : '';
-      lines.push(`  ${f.name.padEnd(16)}${modStr}${typeStr}`);
+      // ── Décorateurs — APRÈS le type (le parser attend "name Type @decs")
+      const mods = [];
+      if (f.pk || f.primary_key)   mods.push('@id');
+      if (f.autoincrement)          mods.push('@autoincrement');
+      if (f.unique)                 mods.push('@unique');
+      if (f.not_null || f.notnull) mods.push('@notnull');
+      const decStr = mods.length ? ' ' + mods.join(' ') : '';
+
+      lines.push(`  ${f.name.padEnd(16)}${typeStr}${decStr}`);
     });
     lines.push('}');
     lines.push('');

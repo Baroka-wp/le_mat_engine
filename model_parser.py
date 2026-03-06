@@ -155,16 +155,32 @@ class FieldDef:
     relation_field: str = "id"            # target field (always id for now)
 
     def to_dict(self) -> dict:
+        # kind pour l'affichage : TYPE_KIND donne "number"/"bool"/"date"/etc.
+        # Pour les types simples absents de TYPE_KIND, on conserve field_kind
+        # ("select", "relation", "file", "bool" sont déjà corrects dans field_kind)
+        display_kind = TYPE_KIND.get(self.lemat_type, self.field_kind)
+        label = TYPE_LABEL.get(self.lemat_type, self.lemat_type.capitalize())
         d = {
-            "name":        self.name,
-            "type":        self.lemat_type,
-            "kind":        self.field_kind,
-            "sqlType":     self.sql_type,
-            "primaryKey":  self.primary_key,
-            "unique":      self.unique,
-            "required":    self.not_null,
-            "default":     self.default,
-            "label":       TYPE_LABEL.get(self.lemat_type, self.lemat_type.capitalize()),
+            # ── Clés camelCase (API) ──────────────────────────────────────────
+            "name":          self.name,
+            "type":          self.lemat_type,    # "int", "text", "select"…
+            "kind":          display_kind,        # "number", "bool", "select"…
+            "sqlType":       self.sql_type,
+            "primaryKey":    self.primary_key,
+            "unique":        self.unique,
+            "required":      self.not_null,
+            "default":       self.default,
+            "label":         label,
+            # ── Clés snake_case (frontend Visual Editor) ──────────────────────
+            # Doublons intentionnels pour que modelsToLemat() et renderSchemaModels()
+            # fonctionnent directement sur les données rechargées depuis le serveur.
+            "lemat_type":    self.lemat_type,
+            "sql_type":      self.sql_type,
+            "pk":            self.primary_key,
+            "primary_key":   self.primary_key,
+            "autoincrement": self.autoincrement,
+            "not_null":      self.not_null,
+            "notnull":       self.not_null,
         }
         if self.select_options:
             d["options"] = self.select_options
