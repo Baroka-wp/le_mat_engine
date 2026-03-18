@@ -793,87 +793,348 @@ async function selectProject(name) {
   openProject(name);
 }
 
+// ── VS Code-style file icons (SVG) ────────────────────────────────────
+const _iconSvg = (paths, color) =>
+  `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">${paths.map(d=>`<path d="${d}" fill="${color}"/>`).join('')}</svg>`;
+
+const FILE_ICONS = {
+  // Web
+  html: _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2h2v1H5V5zm4 0h2v1H9V5zm-2 3h2v1H7V8z'], '#e44d26'),
+  htm:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2h2v1H5V5zm4 0h2v1H9V5zm-2 3h2v1H7V8z'], '#e44d26'),
+  css:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2h6v1H5V5zm1 3h4v1H6V8zm1 3h2v1H7v-1z'], '#1572b6'),
+  js:   _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm3 3v5h1V8h2v3h1V6H6z'], '#f7df1e'),
+  mjs:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm3 3v5h1V8h2v3h1V6H6z'], '#f7df1e'),
+  ts:   _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 3h6v1H9v4H7V7H5V6z'], '#3178c6'),
+  jsx:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm3 3v5h1V8h2v3h1V6H6z'], '#61dafb'),
+  tsx:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 3h6v1H9v4H7V7H5V6z'], '#61dafb'),
+  vue:  _iconSvg(['M8 2L2 14h3l3-7 3 7h3L8 2z'], '#41b883'),
+  svelte: _iconSvg(['M8 2L2 14h3l3-7 3 7h3L8 2z'], '#ff3e00'),
+  // Data
+  json: _iconSvg(['M4 2C3 2 2 3 2 4v8c0 1 1 2 2 2h1v-1H4c-.6 0-1-.4-1-1V4c0-.6.4-1 1-1h1V2H4zm8 0h-1v1h1c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1h-1v1h1c1 0 2-1 2-2V4c0-1-1-2-2-2zM6 5v2h1V5H6zm3 0v2h1V5H9zM6 9v2h4V9H6z'], '#c7a026'),
+  sql:  _iconSvg(['M8 1C5 1 2.5 2 2.5 3.5v9C2.5 14 5 15 8 15s5.5-1 5.5-2.5v-9C13.5 2 11 1 8 1zm0 1.5c2.5 0 4 .7 4 1.5S10.5 5.5 8 5.5 4 4.8 4 4s1.5-1.5 4-1.5z'], '#e38c00'),
+  db:   _iconSvg(['M8 1C5 1 2.5 2 2.5 3.5v9C2.5 14 5 15 8 15s5.5-1 5.5-2.5v-9C13.5 2 11 1 8 1zm0 1.5c2.5 0 4 .7 4 1.5S10.5 5.5 8 5.5 4 4.8 4 4s1.5-1.5 4-1.5z'], '#e38c00'),
+  sqlite: _iconSvg(['M8 1C5 1 2.5 2 2.5 3.5v9C2.5 14 5 15 8 15s5.5-1 5.5-2.5v-9C13.5 2 11 1 8 1zm0 1.5c2.5 0 4 .7 4 1.5S10.5 5.5 8 5.5 4 4.8 4 4s1.5-1.5 4-1.5z'], '#e38c00'),
+  sqlite3: _iconSvg(['M8 1C5 1 2.5 2 2.5 3.5v9C2.5 14 5 15 8 15s5.5-1 5.5-2.5v-9C13.5 2 11 1 8 1zm0 1.5c2.5 0 4 .7 4 1.5S10.5 5.5 8 5.5 4 4.8 4 4s1.5-1.5 4-1.5z'], '#e38c00'),
+  // Languages
+  py:   _iconSvg(['M8 1C5.5 1 4 2 4 3.5V5h4v1H3C1.8 6 1 7 1 8.5 1 10 1.8 11 3 11h1.5v-1.5C4.5 8.5 5.3 8 6 8h4c.7 0 1.5-.3 1.5-1V3.5C11.5 2 10.5 1 8 1zM6 2.5a.75.75 0 110 1.5.75.75 0 010-1.5zM12 5v1.5c0 1-1 1.5-1.5 1.5H6c-.7 0-1.5.3-1.5 1V12.5C4.5 14 5.5 15 8 15c2.5 0 4-1 4-2.5V11H8v-1h5c1.2 0 2-1 2-2.5C15 6 14.2 5 13 5h-1zm2 9.5a.75.75 0 110 1.5.75.75 0 010-1.5z'], '#3572a5'),
+  sh:   _iconSvg(['M2 3v10h12V3H2zm1 1h10v8H3V4zm2 1.5L7.5 8 5 10.5l-.7-.7L6.1 8 4.3 6.2l.7-.7zm4 4.5v1h3V10H9z'], '#4eaa25'),
+  bash: _iconSvg(['M2 3v10h12V3H2zm1 1h10v8H3V4zm2 1.5L7.5 8 5 10.5l-.7-.7L6.1 8 4.3 6.2l.7-.7zm4 4.5v1h3V10H9z'], '#4eaa25'),
+  // Text/docs
+  md:   _iconSvg(['M2 3v10h12V3H2zm1 1h10v8H3V4zm1 2v4h1.5V7.5L6.5 9h1l1-1.5V10H10V6H8.5L8 7l-.5-1H4z'], '#5b5b5b'),
+  txt:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm1 4v1h6V6H5zm0 2v1h6V8H5zm0 2v1h4v-1H5z'], '#87878a'),
+  // Config
+  yaml: _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2v1h1V5H5zm3 0v1h3V5H8zM5 7v1h1V7H5zm3 0v1h3V7H8zM5 9v1h1V9H5zm3 0v1h3V9H8z'], '#cb171e'),
+  yml:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2v1h1V5H5zm3 0v1h3V5H8zM5 7v1h1V7H5zm3 0v1h3V7H8zM5 9v1h1V9H5zm3 0v1h3V9H8z'], '#cb171e'),
+  toml: _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 2v1h1V5H5zm3 0v1h3V5H8zM5 7v1h1V7H5zm3 0v1h3V7H8z'], '#9c4221'),
+  env:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 3h6v1H5V6zm0 2h4v1H5V8zm0 2h5v1H5v-1z'], '#ecd53f'),
+  // Images
+  png:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  jpg:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  jpeg: _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  gif:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  webp: _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  svg:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#e6a817'),
+  ico:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm2 5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm3 2l2 3H5l1.5-2 1 1.3L9 9z'], '#a074c4'),
+  pdf:  _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2zm1 5h1.5c.8 0 1.5.5 1.5 1.2 0 .7-.7 1.2-1.5 1.2H6v2H5V8z'], '#e5252a'),
+  xml:  _iconSvg(['M2 2h12v12H2V2zm1 1v10h10V3H3zm2 3l1.5 2L5 10h1.2l.8-1.3.8 1.3H9L7.5 8 9 6H7.8L7 7.3 6.2 6H5z'], '#e65100'),
+  // Package/lock
+  lock: _iconSvg(['M4 7V5a4 4 0 018 0v2h1v7H3V7h1zm2 0h4V5a2 2 0 10-4 0v2zm1 2v3h2V9H7z'], '#87878a'),
+  // Git
+  gitignore: _iconSvg(['M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5a5.5 5.5 0 014.2 9L4.5 3.8A5.47 5.47 0 018 2.5zM3.8 4.5l7.7 7.7a5.5 5.5 0 01-7.7-7.7z'], '#f05032'),
+  lemat: _iconSvg(['M8 1C5 1 2.5 2 2.5 3.5v9C2.5 14 5 15 8 15s5.5-1 5.5-2.5v-9C13.5 2 11 1 8 1zm0 1.5c2.5 0 4 .7 4 1.5S10.5 5.5 8 5.5 4 4.8 4 4s1.5-1.5 4-1.5z','M5 8h6v1H5V8zm1 2.5h4v1H6v-1z'], '#8b5cf6'),
+};
+
+const _defaultFileIcon = _iconSvg(['M3 1v14h10V4l-3-3H3zm1 1h5v3h3v9H4V2z'], '#87878a');
+const _folderIcon      = _iconSvg(['M1 3v10h14V5H7.5L6 3H1zm1 1h3.3l1.5 2H14v6H2V4z'], '#dcb67a');
+const _folderOpenIcon  = _iconSvg(['M1 3v10h14V5H7.5L6 3H1zm1 2h12v6H2V5z'], '#dcb67a');
+const _chevronRight    = '<svg viewBox="0 0 16 16" width="12" height="12" class="tree-chevron"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function getFileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  // Special names
+  if (name === '.gitignore') return FILE_ICONS.gitignore;
+  if (name === '.env' || name.startsWith('.env.')) return FILE_ICONS.env;
+  if (name.endsWith('.lock') || name === 'package-lock.json') return FILE_ICONS.lock;
+  return FILE_ICONS[ext] || _defaultFileIcon;
+}
+
 // ── File tree ─────────────────────────────────────────────────────────
+let _openDirs = new Set(); // Remember open directories across reloads
+let _draggedPath = null;
+
 async function loadTree() {
   const tree = await api('GET', `/api/projects/${currentProject}/tree`);
   const container = document.getElementById('file-tree');
   container.innerHTML = '';
   renderTree(tree.children, container, '');
+
+  // Drop to root — drag a file to the empty area to move it to project root
+  container.ondragover = (e) => {
+    if (e.target.closest('.tree-item')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    container.classList.add('drag-over-root');
+  };
+  container.ondragleave = (e) => {
+    if (!container.contains(e.relatedTarget) || e.relatedTarget?.closest('.tree-item'))
+      container.classList.remove('drag-over-root');
+  };
+  container.ondrop = async (e) => {
+    container.classList.remove('drag-over-root');
+    if (!_draggedPath || e.target.closest('.tree-item')) return;
+    e.preventDefault();
+    if (!_draggedPath.includes('/')) { _draggedPath = null; return; } // already at root
+    const fileName = _draggedPath.split('/').pop();
+    try {
+      await api('POST', `/api/projects/${currentProject}/move/${_draggedPath}`, { destination: fileName });
+      tabs.forEach(t => {
+        if (t.path === _draggedPath) t.path = fileName;
+        else if (t.path.startsWith(_draggedPath + '/')) t.path = fileName + t.path.substring(_draggedPath.length);
+      });
+      renderTabs();
+      await loadTree();
+      toast('Déplacé à la racine', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+    _draggedPath = null;
+  };
+
+  // Context menu on empty space = root actions
+  container.oncontextmenu = (e) => {
+    if (e.target.closest('.tree-item')) return;
+    e.preventDefault();
+    showTreeContextMenu(e.clientX, e.clientY, '', true);
+  };
 }
 
 function renderTree(children, container, prefix) {
-  (children || []).forEach(node => {
-    const div = document.createElement('div');
-    div.classList.add('tree-item');
+  // Sort: directories first, then files, alphabetically
+  const sorted = [...(children || [])].sort((a, b) => {
+    if (a.type === b.type) return a.name.localeCompare(b.name);
+    return a.type === 'directory' ? -1 : 1;
+  });
+
+  sorted.forEach(node => {
     const isDir = node.type === 'directory';
-    const icon  = isDir ? '📁' : fileIcon(node.name);
     const path  = prefix ? `${prefix}/${node.name}` : node.name;
 
-    div.innerHTML = `
-      <span class="tree-icon">${icon}</span>
-      <span class="tree-name">${node.name}</span>
-      ${!isDir ? '<button class="btn-delete-file" title="Supprimer">✕</button>' : ''}`;
+    const div = document.createElement('div');
+    div.classList.add('tree-item');
+    div.dataset.path = path;
+    div.dataset.isDir = isDir ? '1' : '0';
+
+    const isOpen = _openDirs.has(path);
+
+    if (isDir) {
+      div.innerHTML = `
+        <span class="tree-chevron-wrap ${isOpen ? 'open' : ''}">${_chevronRight}</span>
+        <span class="tree-icon">${isOpen ? _folderOpenIcon : _folderIcon}</span>
+        <span class="tree-name">${node.name}</span>`;
+    } else {
+      div.innerHTML = `
+        <span class="tree-chevron-wrap" style="visibility:hidden">${_chevronRight}</span>
+        <span class="tree-icon">${getFileIcon(node.name)}</span>
+        <span class="tree-name">${node.name}</span>`;
+    }
 
     if (activeTab?.path === path) div.classList.add('active');
 
+    // Drag & Drop
+    div.draggable = true;
+    div.addEventListener('dragstart', (e) => {
+      _draggedPath = path;
+      e.dataTransfer.effectAllowed = 'move';
+      div.classList.add('dragging');
+    });
+    div.addEventListener('dragend', () => {
+      _draggedPath = null;
+      div.classList.remove('dragging');
+      document.querySelectorAll('.tree-item.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
+
     if (isDir) {
+      div.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        div.classList.add('drag-over');
+      });
+      div.addEventListener('dragleave', () => div.classList.remove('drag-over'));
+      div.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        div.classList.remove('drag-over');
+        if (!_draggedPath || _draggedPath === path) return;
+        // Don't allow moving into itself
+        if (path.startsWith(_draggedPath + '/')) return;
+        const fileName = _draggedPath.split('/').pop();
+        const dest = `${path}/${fileName}`;
+        try {
+          await api('POST', `/api/projects/${currentProject}/move/${_draggedPath}`, { destination: dest });
+          // Update open tabs
+          tabs.forEach(t => {
+            if (t.path === _draggedPath) t.path = dest;
+            else if (t.path.startsWith(_draggedPath + '/')) t.path = dest + t.path.substring(_draggedPath.length);
+          });
+          renderTabs();
+          await loadTree();
+          toast(`Déplacé vers ${path}/`, 'success');
+        } catch (err) { toast(err.message, 'error'); }
+        _draggedPath = null;
+      });
+
       const childWrap = document.createElement('div');
       childWrap.classList.add('tree-children');
-      childWrap.style.display = 'none';
-      let open = false;
-      div.onclick = () => {
-        open = !open;
-        childWrap.style.display = open ? 'block' : 'none';
-        div.querySelector('.tree-icon').textContent = open ? '📂' : '📁';
+      childWrap.style.display = isOpen ? 'block' : 'none';
+
+      div.onclick = (e) => {
+        if (e.target.closest('.ctx-trigger')) return;
+        const nowOpen = _openDirs.has(path);
+        if (nowOpen) _openDirs.delete(path); else _openDirs.add(path);
+        childWrap.style.display = nowOpen ? 'none' : 'block';
+        div.querySelector('.tree-chevron-wrap').classList.toggle('open', !nowOpen);
+        div.querySelector('.tree-icon').innerHTML = !nowOpen ? _folderOpenIcon : _folderIcon;
       };
+
       renderTree(node.children, childWrap, path);
       container.appendChild(div);
       container.appendChild(childWrap);
     } else {
-      div.onclick = (e) => { if (!e.target.classList.contains('btn-delete-file')) openFile(path); };
-      div.querySelector('.btn-delete-file').onclick = (e) => {
-        e.stopPropagation();
-        confirmDelete(`Supprimer "${node.name}" ?`, async () => {
-          await api('DELETE', `/api/projects/${currentProject}/files/${path}`);
-          tabs = tabs.filter(t => t.path !== path);
-          if (activeTab?.path === path) activeTab = tabs[tabs.length - 1] || null;
-          renderTabs();
-          if (activeTab) showTab(activeTab); else showWelcome();
-          await loadTree();
-          toast('Fichier supprimé', 'success');
-        });
+      div.onclick = (e) => {
+        if (e.target.closest('.ctx-trigger')) return;
+        openFile(path);
       };
       container.appendChild(div);
     }
+
+    // Context menu on right-click
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTreeContextMenu(e.clientX, e.clientY, path, isDir);
+    });
   });
 }
 
-function fileIcon(name) {
-  const ext = name.split('.').pop().toLowerCase();
-  return ({
-    html:'🌐', htm:'🌐', css:'🎨', js:'⚡', mjs:'⚡', ts:'⚡',
-    json:'📋', sql:'🗄', db:'🗄', sqlite:'🗄', sqlite3:'🗄',
-    md:'📝', txt:'📝', py:'🐍', sh:'⚙',
-    png:'🖼', jpg:'🖼', jpeg:'🖼', gif:'🖼', svg:'🖼', webp:'🖼', pdf:'📄',
-  })[ext] || '📄';
+// ── Context menu ──────────────────────────────────────────────────────
+function showTreeContextMenu(x, y, path, isDir) {
+  removeTreeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'tree-ctx-menu';
+  menu.style.left = x + 'px';
+  menu.style.top  = y + 'px';
+
+  const items = [];
+  if (isDir) {
+    items.push({ label: 'Nouveau fichier', icon: '+', action: () => ctxNewFile(path) });
+    items.push({ label: 'Nouveau dossier', icon: '+', action: () => ctxNewFolder(path) });
+    items.push('sep');
+  }
+  items.push({ label: 'Renommer', icon: '✎', action: () => ctxRename(path) });
+  items.push({ label: 'Supprimer', icon: '✕', danger: true, action: () => ctxDelete(path, isDir) });
+
+  items.forEach(item => {
+    if (item === 'sep') {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.className = 'ctx-item' + (item.danger ? ' danger' : '');
+    btn.innerHTML = `<span class="ctx-icon">${item.icon}</span>${item.label}`;
+    btn.onclick = () => { removeTreeContextMenu(); item.action(); };
+    menu.appendChild(btn);
+  });
+
+  document.body.appendChild(menu);
+  // Adjust if off-screen
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = (x - rect.width) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = (y - rect.height) + 'px';
+
+  setTimeout(() => document.addEventListener('click', removeTreeContextMenu, { once: true }), 0);
 }
 
-// ── New file / folder ─────────────────────────────────────────────────
+function removeTreeContextMenu() {
+  document.querySelectorAll('.tree-ctx-menu').forEach(el => el.remove());
+}
+
+function ctxNewFile(dirPath) {
+  prompt_('Nom du fichier', '', async (name) => {
+    if (!name) return;
+    const fullPath = dirPath ? `${dirPath}/${name}` : name;
+    await api('PUT', `/api/projects/${currentProject}/files/${fullPath}`, { content: '' });
+    _openDirs.add(dirPath);
+    await loadTree();
+    openFile(fullPath);
+  });
+}
+
+function ctxNewFolder(dirPath) {
+  prompt_('Nom du dossier', '', async (name) => {
+    if (!name) return;
+    const fullPath = dirPath ? `${dirPath}/${name}` : name;
+    await api('POST', `/api/projects/${currentProject}/mkdir/${fullPath}`);
+    _openDirs.add(dirPath);
+    await loadTree();
+    toast(`Dossier créé`, 'success');
+  });
+}
+
+function ctxRename(path) {
+  const oldName = path.split('/').pop();
+  prompt_('Renommer', oldName, async (newName) => {
+    if (!newName || newName === oldName) return;
+    const parent = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+    const dest = parent ? `${parent}/${newName}` : newName;
+    try {
+      await api('POST', `/api/projects/${currentProject}/move/${path}`, { destination: dest });
+      // Update open tabs
+      tabs.forEach(t => {
+        if (t.path === path) t.path = dest;
+        else if (t.path.startsWith(path + '/')) t.path = dest + t.path.substring(path.length);
+      });
+      if (activeTab?.path) renderTabs();
+      await loadTree();
+      toast('Renommé', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+}
+
+function ctxDelete(path, isDir) {
+  const label = isDir ? 'dossier' : 'fichier';
+  const name = path.split('/').pop();
+  confirmDelete(`Supprimer le ${label} "${name}" ?`, async () => {
+    await api('DELETE', `/api/projects/${currentProject}/files/${path}`);
+    // Clean tabs that were inside
+    tabs = tabs.filter(t => t.path !== path && !t.path.startsWith(path + '/'));
+    if (activeTab && !tabs.includes(activeTab)) activeTab = tabs[tabs.length - 1] || null;
+    renderTabs();
+    if (activeTab) showTab(activeTab); else showWelcome();
+    await loadTree();
+    toast(`${isDir ? 'Dossier' : 'Fichier'} supprimé`, 'success');
+  });
+}
+
+// ── New file / folder (header buttons) ─────────────────────────────────
 document.getElementById('btn-new-file').onclick = () => {
-  prompt_('Nom du fichier (ex: index.html)', '', async (name) => {
+  prompt_('Nom du fichier (ex: index.html, src/app.js)', '', async (name) => {
     if (!name) return;
     await api('PUT', `/api/projects/${currentProject}/files/${name}`, { content: '' });
+    // Auto-open parent dirs
+    const parts = name.split('/');
+    for (let i = 1; i < parts.length; i++) _openDirs.add(parts.slice(0, i).join('/'));
     await loadTree();
     openFile(name);
   });
 };
 
 document.getElementById('btn-new-folder').onclick = () => {
-  prompt_('Nom du dossier', '', async (name) => {
+  prompt_('Nom du dossier (ex: src, components/ui)', '', async (name) => {
     if (!name) return;
     await api('POST', `/api/projects/${currentProject}/mkdir/${name}`);
+    const parts = name.split('/');
+    for (let i = 1; i <= parts.length; i++) _openDirs.add(parts.slice(0, i).join('/'));
     await loadTree();
-    toast(`Dossier "${name}" créé`, 'success');
+    toast(`Dossier créé`, 'success');
   });
 };
 
@@ -904,9 +1165,13 @@ async function openFile(path) {
   let tab = tabs.find(t => t.path === path);
   if (!tab) {
     const data = await api('GET', `/api/projects/${currentProject}/files/${path}`);
-    const model = monaco.editor.createModel(data.content, detectLang(path));
-    tab = { path, modified: false, model };
-    model.onDidChangeContent(() => { tab.modified = true; renderTabs(); });
+    if (ext === 'lemat') {
+      tab = { path, modified: false, type: 'lemat', content: data.content };
+    } else {
+      const model = monaco.editor.createModel(data.content, detectLang(path));
+      tab = { path, modified: false, model };
+      model.onDidChangeContent(() => { tab.modified = true; renderTabs(); });
+    }
     tabs.push(tab);
   }
   activeTab = tab;
@@ -917,8 +1182,10 @@ async function openFile(path) {
 
 function showTab(tab) {
   if (tab.type === 'data') { showDataTab(tab); return; }
+  if (tab.type === 'lemat') { showLematVisual(tab); return; }
   const container = document.getElementById('editor-container');
   container.querySelectorAll('.data-view').forEach(el => el.remove());
+  container.querySelectorAll('.lemat-editor').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'none';
   document.getElementById('monaco-container').style.display = 'block';
@@ -929,7 +1196,9 @@ function showTab(tab) {
 
 function showWelcome() {
   document.getElementById('monaco-container').style.display = 'none';
-  document.getElementById('editor-container').querySelectorAll('.data-view').forEach(el => el.remove());
+  const ec = document.getElementById('editor-container');
+  ec.querySelectorAll('.data-view').forEach(el => el.remove());
+  ec.querySelectorAll('.lemat-editor').forEach(el => el.remove());
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.style.display = 'flex';
 }
@@ -967,12 +1236,10 @@ function closeTab(path) {
 }
 
 async function saveTab(tab) {
-  await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`, {
-    content: tab.model.getValue(),
-  });
+  const content = tab.type === 'lemat' ? tab.content : tab.model.getValue();
+  await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`, { content });
   tab.modified = false;
   renderTabs();
-  // live reload is triggered server-side on save
   toast('Sauvegardé ✓', 'success');
 }
 
@@ -994,6 +1261,357 @@ function highlightTreeItem(path) {
   });
 }
 
+// ── Lemat Visual Editor ───────────────────────────────────────────────
+
+const LEMAT_TYPES = ['integer','text','real','boolean','datetime','date','json','blob'];
+
+function parseLematSource(src) {
+  const schema = { database: 'database.db', models: [] };
+  const dbMatch = src.match(/^\s*database\s+"([^"]+)"/m);
+  if (dbMatch) schema.database = dbMatch[1];
+
+  const modelRe = /model\s+(\w+)\s*\{([^}]*)\}/gs;
+  let m;
+  while ((m = modelRe.exec(src)) !== null) {
+    const model = { name: m[1], fields: [] };
+    m[2].split('\n').forEach(line => {
+      line = line.trim();
+      if (!line || line.startsWith('//') || line.startsWith('#')) return;
+      const parts = line.split(/\s+/);
+      if (parts.length < 2) return;
+      const f = { name: parts[0], type: parts[1].toLowerCase(), decorators: parts.slice(2).join(' ') };
+      f.pk      = /@id|@primarykey/i.test(f.decorators);
+      f.unique  = /@unique/.test(f.decorators);
+      f.required = /@required|@notnull/i.test(f.decorators);
+      const dm = f.decorators.match(/@default\(([^)]+)\)/);
+      f.default_ = dm ? dm[1] : null;
+      const rm = f.decorators.match(/@ref\(([^)]+)\)/);
+      f.ref = rm ? rm[1] : null;
+      model.fields.push(f);
+    });
+    schema.models.push(model);
+  }
+  return schema;
+}
+
+function lematToSource(schema) {
+  let lines = [`database "${schema.database}"`, ''];
+  schema.models.forEach(model => {
+    lines.push(`model ${model.name} {`);
+    model.fields.forEach(f => {
+      let decs = [];
+      if (f.pk) decs.push('@id');
+      if (f.required && !f.pk) decs.push('@required');
+      if (f.unique) decs.push('@unique');
+      if (f.default_) decs.push(`@default(${f.default_})`);
+      if (f.ref) decs.push(`@ref(${f.ref})`);
+      const padding1 = ' '.repeat(Math.max(1, 14 - f.name.length));
+      const padding2 = ' '.repeat(Math.max(1, 12 - f.type.length));
+      lines.push(`  ${f.name}${padding1}${f.type}${padding2}${decs.join(' ')}`.trimEnd());
+    });
+    lines.push('}', '');
+  });
+  return lines.join('\n');
+}
+
+function showLematVisual(tab) {
+  const container = document.getElementById('editor-container');
+  container.querySelectorAll('.data-view').forEach(el => el.remove());
+  container.querySelectorAll('.lemat-editor').forEach(el => el.remove());
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.style.display = 'none';
+  document.getElementById('monaco-container').style.display = 'none';
+
+  const schema = parseLematSource(tab.content);
+  const wrap = document.createElement('div');
+  wrap.className = 'lemat-editor';
+
+  // Toolbar
+  const toolbar = document.createElement('div');
+  toolbar.className = 'lemat-toolbar';
+  toolbar.innerHTML = `
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12"/><path d="M6 2v4"/></svg>
+    <span class="lemat-toolbar-title">${tab.path}</span>
+    <div style="flex:1"></div>
+    <button class="btn-lemat btn-lemat-code" title="Voir le code source">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 3L1 8l4 5"/><path d="M11 3l4 5-4 5"/><path d="M9 2L7 14"/></svg>
+      Code
+    </button>
+    <button class="btn-lemat" id="lemat-add-model">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+      Modèle
+    </button>
+    <button class="btn-lemat" id="lemat-migrate" title="Créer/mettre à jour la base de données">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4l6-3 6 3v8l-6 3-6-3V4z"/><path d="M2 4l6 3 6-3"/><path d="M8 7v8"/></svg>
+      Migrer
+    </button>
+    <button class="btn-lemat primary" id="lemat-save">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 14H4a1 1 0 01-1-1V3a1 1 0 011-1h6l3 3v8a1 1 0 01-1 1z"/><path d="M10 2v3h3"/></svg>
+      Sauvegarder
+    </button>`;
+  wrap.appendChild(toolbar);
+
+  // Canvas
+  const canvas = document.createElement('div');
+  canvas.className = 'lemat-canvas';
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+
+  function markDirty() { tab.modified = true; renderTabs(); }
+
+  function render() {
+    canvas.innerHTML = '';
+    if (!schema.models.length) {
+      canvas.innerHTML = `<div class="lemat-empty">
+        <svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="var(--muted)" stroke-width="1.2" opacity=".4"><rect x="6" y="6" width="36" height="36" rx="4"/><path d="M6 14h36"/><path d="M16 6v8"/><path d="M32 6v8"/><path d="M16 24h16"/><path d="M16 32h8"/></svg>
+        <span>Aucun modèle dans ce schema.</span>
+        <button class="btn-lemat primary" onclick="document.getElementById('lemat-add-model').click()">+ Créer un modèle</button>
+      </div>`;
+      return;
+    }
+    schema.models.forEach((model, mi) => {
+      const card = document.createElement('div');
+      card.className = 'lemat-model-card';
+
+      // Header
+      const header = document.createElement('div');
+      header.className = 'lemat-model-header';
+      header.innerHTML = `
+        <div class="lemat-model-name-wrap">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.3"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12"/></svg>
+          <span class="lemat-model-name">${model.name}</span>
+          <span class="lemat-model-count">${model.fields.length} champ${model.fields.length > 1 ? 's' : ''}</span>
+        </div>
+        <div class="lemat-model-actions">
+          <button class="btn-rename-model" title="Renommer">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M9.5 3.5l3 3L5 14H2v-3l7.5-7.5z"/></svg>
+          </button>
+          <button class="btn-del-model" title="Supprimer">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h10l-1 9H4L3 5z"/><path d="M6 5V3h4v2"/><path d="M1 5h14"/></svg>
+          </button>
+        </div>`;
+      header.querySelector('.btn-rename-model').onclick = () => {
+        prompt_('Nom du modèle', model.name, (n) => {
+          if (!n || n === model.name) return;
+          model.name = n; markDirty(); render();
+        });
+      };
+      header.querySelector('.btn-del-model').onclick = () => {
+        confirmDelete(`Supprimer le modèle "${model.name}" ?`, () => {
+          schema.models.splice(mi, 1); markDirty(); render();
+        });
+      };
+      card.appendChild(header);
+
+      // Fields
+      const fieldList = document.createElement('div');
+      fieldList.className = 'lemat-field-list';
+      model.fields.forEach((f, fi) => {
+        const row = document.createElement('div');
+        row.className = 'lemat-field-row';
+        let badges = '';
+        if (f.pk)       badges += '<span class="lemat-badge pk">PK</span>';
+        if (f.required && !f.pk) badges += '<span class="lemat-badge req">REQ</span>';
+        if (f.unique)   badges += '<span class="lemat-badge uq">UQ</span>';
+        if (f.ref)      badges += `<span class="lemat-badge ref">→ ${f.ref}</span>`;
+        if (f.default_) badges += `<span class="lemat-badge def">= ${f.default_}</span>`;
+        row.innerHTML = `
+          <span class="lemat-field-name">${f.name}</span>
+          <span class="lemat-field-type">${f.type}</span>
+          <span class="lemat-field-badges">${badges}</span>
+          <button class="lemat-field-del" title="Supprimer">✕</button>`;
+        row.querySelector('.lemat-field-del').onclick = (e) => {
+          e.stopPropagation();
+          model.fields.splice(fi, 1); markDirty(); render();
+        };
+        row.onclick = () => showFieldEditor(fieldList, row, f, model, () => { markDirty(); render(); });
+        fieldList.appendChild(row);
+      });
+      card.appendChild(fieldList);
+
+      // Add field button
+      const addBtn = document.createElement('button');
+      addBtn.className = 'lemat-add-field';
+      addBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg> Ajouter un champ';
+      addBtn.onclick = () => {
+        const nf = { name: '', type: 'text', decorators: '', pk: false, unique: false, required: false, default_: null, ref: null };
+        model.fields.push(nf); markDirty(); render();
+        const rows = card.querySelectorAll('.lemat-field-row');
+        const lastRow = rows[rows.length - 1];
+        if (lastRow) lastRow.click(); // open editor
+      };
+      card.appendChild(addBtn);
+      canvas.appendChild(card);
+    });
+  }
+
+  function showFieldEditor(parentEl, rowEl, field, model, onDone) {
+    // Remove any existing editor
+    parentEl.querySelectorAll('.lemat-field-edit').forEach(el => el.remove());
+    // Show all rows
+    parentEl.querySelectorAll('.lemat-field-row').forEach(r => r.style.display = '');
+
+    rowEl.style.display = 'none';
+    const editRow = document.createElement('div');
+    editRow.className = 'lemat-field-edit';
+
+    const refOptions = schema.models
+      .filter(m => m !== model)
+      .flatMap(m => m.fields.filter(f => f.pk).map(f => `${m.name}.${f.name}`));
+
+    editRow.innerHTML = `
+      <input type="text" placeholder="nom du champ" value="${field.name}" class="fe-name" />
+      <select class="fe-type">${LEMAT_TYPES.map(t => `<option ${t===field.type?'selected':''}>${t}</option>`).join('')}</select>
+      <label title="Clé primaire"><input type="checkbox" class="fe-pk" ${field.pk?'checked':''}/> PK</label>
+      <label title="Requis"><input type="checkbox" class="fe-req" ${field.required?'checked':''}/> Req</label>
+      <label title="Unique"><input type="checkbox" class="fe-uq" ${field.unique?'checked':''}/> Uniq</label>
+      ${refOptions.length ? `<select class="fe-ref"><option value="">— ref —</option>${refOptions.map(r => `<option ${r===field.ref?'selected':''}>${r}</option>`).join('')}</select>` : ''}
+      <button class="btn-field-ok" title="Valider">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8l3 3 7-7"/></svg>
+      </button>
+      <button class="btn-field-cancel" title="Annuler">✕</button>`;
+    rowEl.after(editRow);
+
+    const nameInput = editRow.querySelector('.fe-name');
+    nameInput.focus();
+    if (!field.name) nameInput.placeholder = 'nom du champ';
+    else nameInput.select();
+
+    const save = () => {
+      const n = nameInput.value.trim();
+      if (!n) { cancel(); return; }
+      field.name = n;
+      field.type = editRow.querySelector('.fe-type').value;
+      field.pk = editRow.querySelector('.fe-pk').checked;
+      field.required = editRow.querySelector('.fe-req').checked;
+      field.unique = editRow.querySelector('.fe-uq').checked;
+      const refSel = editRow.querySelector('.fe-ref');
+      field.ref = refSel ? refSel.value || null : field.ref;
+      onDone();
+    };
+    const cancel = () => {
+      if (!field.name) {
+        const idx = model.fields.indexOf(field);
+        if (idx >= 0) model.fields.splice(idx, 1);
+      }
+      onDone();
+    };
+    editRow.querySelector('.btn-field-ok').onclick = save;
+    editRow.querySelector('.btn-field-cancel').onclick = cancel;
+    nameInput.onkeydown = (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); };
+  }
+
+  // Toolbar actions
+  toolbar.querySelector('#lemat-add-model').onclick = () => {
+    prompt_('Nom du modèle (ex: User, Article)', '', (name) => {
+      if (!name) return;
+      schema.models.push({ name, fields: [
+        { name: 'id', type: 'integer', decorators: '@id', pk: true, unique: false, required: false, default_: null, ref: null },
+        { name: 'createdAt', type: 'datetime', decorators: '@default(now)', pk: false, unique: false, required: false, default_: 'now', ref: null },
+      ]});
+      markDirty(); render();
+    });
+  };
+
+  toolbar.querySelector('#lemat-save').onclick = async () => {
+    tab.content = lematToSource(schema);
+    await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`, { content: tab.content });
+    tab.modified = false; renderTabs();
+    toast('Schema sauvegardé', 'success');
+  };
+
+  toolbar.querySelector('#lemat-migrate').onclick = async () => {
+    // Save first, then migrate
+    tab.content = lematToSource(schema);
+    await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`, { content: tab.content });
+    tab.modified = false; renderTabs();
+    try {
+      const res = await api('POST', `/api/projects/${currentProject}/schema/sync`);
+      toast(res.message || 'Migration effectuée', 'success');
+      await loadDbSection();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
+  toolbar.querySelector('.btn-lemat-code').onclick = () => {
+    tab.content = lematToSource(schema);
+    _switchToLematCode(tab, container);
+  };
+
+  render();
+}
+
+function _switchToLematCode(tab, container) {
+  if (tab.model) tab.model.dispose();
+  tab.model = monaco.editor.createModel(tab.content, 'plaintext');
+  tab.model.onDidChangeContent(() => {
+    tab.modified = true;
+    tab.content = tab.model.getValue();
+    renderTabs();
+  });
+  tab._codeMode = true;
+  container.querySelectorAll('.lemat-editor').forEach(el => el.remove());
+  document.getElementById('monaco-container').style.display = 'block';
+
+  // Add a mini toolbar above Monaco for switching back
+  let codeBar = container.querySelector('.lemat-code-bar');
+  if (!codeBar) {
+    codeBar = document.createElement('div');
+    codeBar.className = 'lemat-code-bar';
+    codeBar.innerHTML = `
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M5 3L1 8l4 5"/><path d="M11 3l4 5-4 5"/></svg>
+      <span>${tab.path}</span>
+      <div style="flex:1"></div>
+      <button class="btn-lemat" id="lemat-code-visual">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12"/><path d="M6 2v4"/></svg>
+        Visuel
+      </button>
+      <button class="btn-lemat" id="lemat-code-migrate">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4l6-3 6 3v8l-6 3-6-3V4z"/><path d="M2 4l6 3 6-3"/><path d="M8 7v8"/></svg>
+        Migrer
+      </button>`;
+    container.insertBefore(codeBar, container.firstChild);
+  }
+  codeBar.querySelector('#lemat-code-visual').onclick = () => {
+    tab.content = tab.model.getValue();
+    tab._codeMode = false;
+    codeBar.remove();
+    showLematVisual(tab);
+  };
+  codeBar.querySelector('#lemat-code-migrate').onclick = async () => {
+    tab.content = tab.model.getValue();
+    await api('PUT', `/api/projects/${currentProject}/files/${tab.path}`, { content: tab.content });
+    tab.modified = false; renderTabs();
+    try {
+      const res = await api('POST', `/api/projects/${currentProject}/schema/sync`);
+      toast(res.message || 'Migration effectuée', 'success');
+      await loadDbSection();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
+  editor.setModel(tab.model);
+  editor.layout();
+  editor.focus();
+}
+
+// Override showTab for lemat tabs in code mode
+const _origShowTab = showTab;
+showTab = function(tab) {
+  // Clean up code bar if switching away
+  const codeBar = document.getElementById('editor-container').querySelector('.lemat-code-bar');
+  if (codeBar && !(tab.type === 'lemat' && tab._codeMode)) codeBar.remove();
+
+  if (tab.type === 'lemat' && tab._codeMode) {
+    const container = document.getElementById('editor-container');
+    container.querySelectorAll('.data-view').forEach(el => el.remove());
+    container.querySelectorAll('.lemat-editor').forEach(el => el.remove());
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.style.display = 'none';
+    _switchToLematCode(tab, container);
+    return;
+  }
+  _origShowTab(tab);
+};
+
 // ── DB Section ───────────────────────────────────────────────────────
 let dbSchema = null;
 
@@ -1013,7 +1631,7 @@ async function loadDbSection() {
   if (info.hasSchemaFile && !info.database) {
     const hint = document.createElement('div');
     hint.style.cssText = 'padding:8px 12px;font-size:12px;color:var(--warn)';
-    hint.textContent = '⚡ Clique "Sync" pour créer la base depuis le schéma';
+    hint.textContent = 'Clique "Migrer" pour créer la base depuis le schéma';
     tree.appendChild(hint);
   }
 
@@ -1098,8 +1716,9 @@ async function showDataTab(tab) {
 
   const container = document.getElementById('editor-container');
 
-  // Remove existing data view
+  // Remove existing data view & lemat editor
   container.querySelectorAll('.data-view').forEach(el => el.remove());
+  container.querySelectorAll('.lemat-editor').forEach(el => el.remove());
 
   const data = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}?limit=200`);
 
@@ -1334,9 +1953,11 @@ function prompt_(title, placeholder, cb) {
 }
 
 function confirmDelete(msg, cb) {
-  prompt_(`${msg}\n(Tapez "oui" pour confirmer)`, '', val => {
-    if (['oui','yes','1'].includes(val.toLowerCase())) cb();
-  });
+  const backdrop = document.getElementById('confirm-backdrop');
+  document.getElementById('confirm-msg').textContent = msg;
+  backdrop.classList.remove('hidden');
+  document.getElementById('confirm-yes').onclick = () => { backdrop.classList.add('hidden'); cb(); };
+  document.getElementById('confirm-no').onclick  = () => backdrop.classList.add('hidden');
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────

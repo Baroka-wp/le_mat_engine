@@ -37,7 +37,9 @@ if [ -n "$PIDS" ]; then
 fi
 
 # Arrêter aussi les conteneurs Docker sur ce port
-docker ps --format '{{.ID}} {{.Ports}}' 2>/dev/null | grep ":${PORT}->" | awk '{print $1}' | xargs -r docker stop 2>/dev/null || true
+if command -v docker &>/dev/null; then
+  docker ps --format '{{.ID}} {{.Ports}}' 2>/dev/null | grep ":${PORT}->" | awk '{print $1}' | xargs -r docker stop 2>/dev/null || true
+fi
 
 # ── Lancer uvicorn avec --reload ──────────────────────────────────────────────
 echo ""

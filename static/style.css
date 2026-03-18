@@ -61,8 +61,18 @@ body {
   flex-direction: column;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.sidebar-section:last-child { flex: 1; }
+#filetree-section {
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow: hidden;
+}
+#db-section, #cron-section, #email-section {
+  flex-shrink: 0;
+  max-height: 35vh;
+  overflow-y: auto;
+}
 
 .sidebar-header {
   display: flex;
@@ -85,15 +95,20 @@ body {
   color: var(--muted);
   cursor: pointer;
   font-size: 14px;
-  padding: 2px 4px;
+  padding: 4px;
   border-radius: var(--radius);
   text-decoration: none;
-  line-height: 1;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+.sidebar-header button svg,
+.sidebar-header a svg { display: block; }
 .sidebar-header button:hover,
 .sidebar-header a:hover { color: var(--text); background: var(--hover); }
 
-#btn-new-project { font-size: 18px !important; color: var(--accent) !important; }
+#btn-new-project { color: var(--accent) !important; }
 
 #project-list {
   list-style: none;
@@ -139,17 +154,47 @@ body {
 }
 .tree-item:hover  { background: var(--hover); }
 .tree-item.active { background: var(--active); color: var(--accent); }
-.tree-icon { font-size: 13px; flex-shrink: 0; }
-.tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-item.dragging { opacity: .4; }
+.tree-item.drag-over { background: var(--accent); color: #fff; border-radius: var(--radius); }
+#file-tree.drag-over-root { background: var(--hover); outline: 2px dashed var(--muted); outline-offset: -4px; border-radius: var(--radius); }
+.tree-icon { flex-shrink: 0; line-height: 0; display: flex; align-items: center; }
+.tree-icon svg { width: 16px; height: 16px; }
+.tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 
-.btn-delete-file {
-  background: none; border: none; color: var(--muted);
-  cursor: pointer; font-size: 11px; padding: 1px 3px;
-  border-radius: 3px; opacity: 0;
+.tree-chevron-wrap {
+  display: flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; flex-shrink: 0;
+  transition: transform .12s;
 }
-.tree-item:hover .btn-delete-file { opacity: 1; }
-.btn-delete-file:hover { color: var(--danger); }
-.tree-children { padding-left: 14px; }
+.tree-chevron-wrap.open { transform: rotate(90deg); }
+.tree-chevron { color: var(--muted); }
+
+.tree-children { padding-left: 16px; border-left: 1px solid var(--border); margin-left: 11px; }
+
+/* ── Context menu ─────────────────────────────────────────────────── */
+.tree-ctx-menu {
+  position: fixed; z-index: 9999;
+  min-width: 180px;
+  background: var(--sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  padding: 4px 0;
+  font-size: 13px;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 6px 14px;
+  background: none; border: none;
+  color: var(--text); cursor: pointer;
+  font-family: inherit; font-size: 13px;
+  text-align: left;
+}
+.ctx-item:hover { background: var(--hover); }
+.ctx-item.danger:hover { background: #fef2f2; color: var(--danger); }
+.ctx-icon { width: 16px; text-align: center; font-size: 13px; color: var(--muted); }
+.ctx-item.danger .ctx-icon { color: var(--danger); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 8px; }
 
 /* ── Main ────────────────────────────────────────────────────────────── */
 #main {
@@ -1305,4 +1350,171 @@ button.primary:hover { opacity: .85; }
   transition: all .12s;
 }
 .btn-logout:hover { background: #fef2f2; border-color: #fecaca; color: var(--danger); }
+
+/* ── Confirm delete modal ────────────────────────────────────────────── */
+#confirm-backdrop {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.3); backdrop-filter: blur(2px);
+}
+#confirm-backdrop.hidden { display: none; }
+.confirm-modal {
+  background: var(--sidebar); border: 1px solid var(--border);
+  border-radius: 10px; padding: 28px 32px; max-width: 360px; width: 90%;
+  text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.12);
+}
+.confirm-icon { margin-bottom: 12px; }
+.confirm-msg { font-size: 14px; color: var(--text); margin-bottom: 20px; line-height: 1.5; }
+.confirm-actions { display: flex; gap: 10px; justify-content: center; }
+.btn-confirm-cancel {
+  padding: 8px 20px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--sidebar); color: var(--text); cursor: pointer; font-size: 13px;
+  font-family: inherit; font-weight: 500;
+}
+.btn-confirm-cancel:hover { background: var(--hover); }
+.btn-confirm-delete {
+  padding: 8px 20px; border-radius: var(--radius); border: none;
+  background: var(--danger); color: #fff; cursor: pointer; font-size: 13px;
+  font-family: inherit; font-weight: 600;
+}
+.btn-confirm-delete:hover { opacity: .9; }
+
+/* ── Lemat visual editor ─────────────────────────────────────────────── */
+.lemat-editor {
+  display: flex; flex-direction: column; height: 100%;
+  background: var(--bg); overflow: hidden;
+}
+.lemat-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+  background: var(--sidebar); flex-shrink: 0;
+}
+.lemat-toolbar-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.lemat-toolbar-sub { font-size: 12px; color: var(--muted); }
+.lemat-toolbar .btn-lemat {
+  margin-left: auto; padding: 6px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--sidebar);
+  color: var(--text); cursor: pointer; font-size: 12px; font-weight: 500;
+  font-family: inherit; display: flex; align-items: center; gap: 6px;
+}
+.lemat-toolbar .btn-lemat:hover { background: var(--hover); }
+.lemat-toolbar .btn-lemat.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lemat-toolbar .btn-lemat.primary:hover { opacity: .9; }
+.lemat-toolbar .btn-lemat-code { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+.lemat-toolbar .btn-lemat-code:hover { color: var(--text); }
+
+.lemat-canvas {
+  flex: 1; overflow: auto; padding: 24px;
+  display: flex; flex-wrap: wrap; gap: 20px; align-content: flex-start;
+}
+
+.lemat-model-card {
+  background: var(--sidebar); border: 1px solid var(--border);
+  border-radius: 8px; min-width: 260px; max-width: 340px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04); overflow: hidden;
+}
+.lemat-model-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  background: var(--accent); color: #fff;
+}
+.lemat-model-name {
+  font-size: 14px; font-weight: 700; letter-spacing: .3px;
+}
+.lemat-model-actions { display: flex; gap: 4px; }
+.lemat-model-actions button {
+  background: none; border: none; color: rgba(255,255,255,.7);
+  cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 3px;
+}
+.lemat-model-actions button:hover { color: #fff; background: rgba(255,255,255,.15); }
+
+.lemat-field-list { padding: 0; }
+.lemat-field-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-bottom: 1px solid var(--border);
+  font-size: 13px; transition: background .1s;
+}
+.lemat-field-row:last-child { border-bottom: none; }
+.lemat-field-row:hover { background: var(--hover); }
+.lemat-field-name { font-weight: 600; min-width: 90px; color: var(--text); }
+.lemat-field-type { color: var(--muted); font-size: 12px; min-width: 60px; }
+.lemat-field-badges { display: flex; gap: 4px; flex: 1; }
+.lemat-badge {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
+}
+.lemat-badge.pk  { background: #fef3c7; color: #92400e; }
+.lemat-badge.req { background: #fee2e2; color: #991b1b; }
+.lemat-badge.uq  { background: #dbeafe; color: #1e40af; }
+.lemat-badge.ref { background: #ede9fe; color: #5b21b6; }
+.lemat-badge.def { background: #f0fdf4; color: #166534; }
+.lemat-field-del {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 11px; opacity: 0; transition: opacity .1s;
+}
+.lemat-field-row:hover .lemat-field-del { opacity: 1; }
+.lemat-field-del:hover { color: var(--danger); }
+
+.lemat-add-field {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px; color: var(--muted); cursor: pointer;
+  font-size: 12px; border-top: 1px solid var(--border);
+  background: none; border-left: none; border-right: none; border-bottom: none;
+  width: 100%; font-family: inherit;
+}
+.lemat-add-field:hover { color: var(--accent); background: var(--hover); }
+
+/* Field inline editor */
+.lemat-field-edit {
+  display: flex; gap: 6px; padding: 6px 14px; border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.lemat-field-edit input, .lemat-field-edit select {
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; font-family: inherit; background: var(--bg); color: var(--text);
+}
+.lemat-field-edit input { width: 90px; }
+.lemat-field-edit select { width: 80px; }
+.lemat-field-edit label { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.lemat-field-edit input[type=checkbox] { width: auto; margin: 0; }
+.lemat-field-edit .btn-field-ok {
+  padding: 3px 10px; background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius); cursor: pointer; font-size: 11px; font-weight: 600;
+}
+.lemat-field-edit .btn-field-cancel {
+  padding: 3px 8px; background: none; color: var(--muted); border: 1px solid var(--border);
+  border-radius: var(--radius); cursor: pointer; font-size: 11px;
+}
+
+.lemat-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 1; gap: 12px; color: var(--muted); font-size: 14px;
+}
+.lemat-empty svg { opacity: .3; }
+.lemat-empty button { margin-top: 8px; }
+
+.lemat-model-name-wrap {
+  display: flex; align-items: center; gap: 8px;
+}
+.lemat-model-count {
+  font-size: 11px; opacity: .6; font-weight: 400;
+}
+
+/* Code bar (shown above Monaco for .lemat files in code mode) */
+.lemat-code-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-bottom: 1px solid var(--border);
+  background: var(--sidebar); font-size: 13px; color: var(--muted);
+  flex-shrink: 0;
+}
+.lemat-code-bar span { font-weight: 500; color: var(--text); }
+.lemat-code-bar .btn-lemat { margin-left: 0; }
+
+/* Responsive lemat canvas */
+@media (max-width: 900px) {
+  .lemat-canvas { padding: 12px; gap: 12px; }
+  .lemat-model-card { min-width: 100%; max-width: 100%; }
+  .lemat-toolbar { flex-wrap: wrap; gap: 6px; }
+  .lemat-field-edit { flex-wrap: wrap; }
+}
 

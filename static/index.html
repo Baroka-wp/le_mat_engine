@@ -107,8 +107,12 @@
       <div class="sidebar-header">
         <span>Projets</span>
         <div class="sidebar-header-actions">
-          <button id="btn-import-project" title="Importer un projet (.zip)">📥</button>
-          <button id="btn-new-project"    title="Nouveau projet">+</button>
+          <button id="btn-import-project" title="Importer un projet (.zip)">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10v3H2v-3"/><path d="M8 2v8"/><path d="M4 7l4 4 4-4"/></svg>
+          </button>
+          <button id="btn-new-project" title="Nouveau projet">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+          </button>
         </div>
       </div>
       <ul id="project-list"></ul>
@@ -118,11 +122,21 @@
       <div class="sidebar-header">
         <span id="current-project-name">—</span>
         <div class="sidebar-header-actions">
-          <button id="btn-deploy-project" title="Déployer le projet">🚀</button>
-          <button id="btn-export-project" title="Exporter le projet (.zip)">⬇</button>
-          <button id="btn-new-file"       title="Nouveau fichier">📄</button>
-          <button id="btn-new-folder"     title="Nouveau dossier">📁</button>
-          <button id="btn-upload"         title="Uploader des fichiers">⬆</button>
+          <button id="btn-deploy-project" title="Déployer le projet">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12V2"/><path d="M4 5l4-4 4 4"/><circle cx="8" cy="13.5" r="1.5" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button id="btn-export-project" title="Exporter le projet (.zip)">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10v3H2v-3"/><path d="M8 2v8"/><path d="M4 7l4 4 4-4"/></svg>
+          </button>
+          <button id="btn-new-file" title="Nouveau fichier">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1H4v14h9V5l-4-4z"/><path d="M9 1v4h4"/></svg>
+          </button>
+          <button id="btn-new-folder" title="Nouveau dossier">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v9h14V6H7.5L6 4H1z"/></svg>
+          </button>
+          <button id="btn-upload" title="Uploader des fichiers">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10v3H2v-3"/><path d="M8 10V2"/><path d="M4 5l4-4 4 4"/></svg>
+          </button>
         </div>
       </div>
       <div id="file-tree"></div>
@@ -133,7 +147,7 @@
       <div class="sidebar-header">
         <span>Base de données</span>
         <div class="sidebar-header-actions">
-          <button id="btn-sync-db" title="Synchroniser le schéma (.lemat → .db)">⚡ Sync</button>
+          <button id="btn-sync-db" title="Créer/mettre à jour la base (.lemat → .db)">Migrer</button>
         </div>
       </div>
       <div id="db-tree"></div>
@@ -240,6 +254,20 @@
       <div id="modal-actions">
         <button id="modal-cancel">Annuler</button>
         <button id="modal-ok" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm delete modal ── -->
+  <div id="confirm-backdrop" class="hidden">
+    <div class="confirm-modal">
+      <div class="confirm-icon">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="#dc2626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      </div>
+      <div id="confirm-msg" class="confirm-msg"></div>
+      <div class="confirm-actions">
+        <button id="confirm-no" class="btn-confirm-cancel">Annuler</button>
+        <button id="confirm-yes" class="btn-confirm-delete">Supprimer</button>
       </div>
     </div>
   </div>
