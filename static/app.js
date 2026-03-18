@@ -100,7 +100,7 @@ let currentRunId   = null;
 let currentES      = null;
 
 // Types de fichiers qui s'ouvrent dans le navigateur (pas exécutés)
-const WEB_EXTS = new Set(['html', 'htm', 'css', 'svg', 'js', 'json']);
+const WEB_EXTS = new Set(['html', 'htm', 'css', 'svg']);
 
 // ── Monaco setup ─────────────────────────────────────────────────────
 require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });

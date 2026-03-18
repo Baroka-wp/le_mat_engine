@@ -210,7 +210,7 @@ livereload_clients: dict[str, list[WebSocket]] = {}
 
 LANG_RUNNERS = {
     "py":  ["python3", "-u", "-c", "exec(open('_lemat_init.py').read()); exec(compile(open('{file}').read(), '{file}', 'exec'))"],
-    "js":  ["node", "--require", "./_lemat_init.js", "{file}"],
+    "js":  ["node", "-e", "require('./_lemat_init.js');const _AF=Object.getPrototypeOf(async function(){}).constructor;const _code=require('fs').readFileSync('{file}','utf8');new _AF(_code+'\\n//# sourceURL={file}')().catch(e=>{console.error(e);process.exit(1)})"],
     "mjs": ["node", "{file}"],
     "ts":  ["npx", "--yes", "ts-node", "{file}"],
     "sh":  ["bash", "{file}"],
