@@ -21,7 +21,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 import aiofiles
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request, Depends
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,8 @@ from pydantic import BaseModel
 
 import model_parser
 import db_engine
+import auth as _auth
+from auth import get_current_user, RegisterRequest, LoginRequest, TokenResponse
 
 BASE_DIR = Path(os.environ.get("BASE_DIR", "/data/projects"))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -88,6 +90,68 @@ app.add_middleware(
 
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 app.mount("/editor", StaticFiles(directory=STATIC_DIR, html=True), name="editor")
+
+# ── Ownership middleware — vérifie que l'utilisateur est propriétaire du projet ──
+# NOTE : défini AVANT auth_middleware pour qu'il s'exécute APRÈS (FastAPI stack order)
+
+@app.middleware("http")
+async def project_ownership_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/projects/") and not path.startswith("/api/projects-import"):
+        parts = path.split("/")
+        if len(parts) >= 4:
+            project_name = parts[3]
+            # Laisser passer POST /api/projects/{name} (création)
+            if request.method == "POST" and len(parts) == 4:
+                return await call_next(request)
+            project_dir = BASE_DIR / project_name
+            if project_dir.exists():
+                meta_p = project_dir / "_meta.json"
+                if meta_p.exists():
+                    try:
+                        meta = json.loads(meta_p.read_text())
+                    except Exception:
+                        meta = {}
+                    owner = meta.get("owner_id")
+                    user_id = getattr(request.state, 'user_id', None)
+                    if owner is not None and user_id is not None and owner != user_id:
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(status_code=403, content={"detail": "Accès non autorisé"})
+    return await call_next(request)
+
+# ── Auth middleware — protège toutes les routes /api/projects* et /api/deployments ──
+
+_PUBLIC_API_PREFIXES = ("/api/auth/",)
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Routes publiques : auth, assets statiques, projets déployés (/p/), livereload WS
+    is_public = (
+        any(path.startswith(p) for p in _PUBLIC_API_PREFIXES)
+        or path.startswith("/p/")
+        or path.startswith("/editor")
+        or not path.startswith("/api/")
+    )
+    if is_public:
+        return await call_next(request)
+
+    # Vérifier le JWT
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Non authentifié"})
+    token = auth_header[7:]
+    try:
+        payload = _auth.decode_token(token)
+        request.state.user_id = int(payload["sub"])
+        request.state.user_email = payload["email"]
+    except Exception:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Token invalide ou expiré"})
+
+    return await call_next(request)
+
 
 # Domaines réservés à Le Mat lui-même (jamais routés vers un projet)
 _LEMAT_MAIN_DOMAINS: set[str] = {
@@ -192,6 +256,31 @@ def inject_scripts_deployed(html: str, project: str) -> str:
     if "</body>" in html:
         return html.replace("</body>", script + "</body>", 1)
     return html + script
+
+
+# ── Auth routes ──────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/register", response_model=TokenResponse)
+def register(req: RegisterRequest):
+    if not req.email or "@" not in req.email:
+        raise HTTPException(400, "Email invalide")
+    if len(req.password) < 6:
+        raise HTTPException(400, "Mot de passe trop court (6 caractères min)")
+    user = _auth.create_user(req.email.strip().lower(), req.password)
+    token = _auth.create_access_token(user["id"], user["email"])
+    return TokenResponse(access_token=token, email=user["email"], user_id=user["id"])
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(req: LoginRequest):
+    user = _auth.get_user_by_email(req.email.strip().lower())
+    if not user or not _auth.verify_password(req.password, user["password"]):
+        raise HTTPException(401, "Email ou mot de passe incorrect")
+    token = _auth.create_access_token(user["id"], user["email"])
+    return TokenResponse(access_token=token, email=user["email"], user_id=user["id"])
+
+@app.get("/api/auth/me")
+def me(current_user: dict = Depends(get_current_user)):
+    return {"id": current_user["id"], "email": current_user["email"], "created_at": current_user["created_at"]}
 
 
 # ── Project / file helpers ────────────────────────────────────────────────────
@@ -892,8 +981,21 @@ def _reload_all_crons():
                     print(f"[cron] Erreur chargement {pdir.name}/{job.get('id')}: {e}")
 
 
+def _migrate_project_ownership():
+    """Assigne les projets sans owner à l'admin (user_id=1)."""
+    if not BASE_DIR.exists():
+        return
+    for d in BASE_DIR.iterdir():
+        if d.is_dir():
+            meta = _load_meta(d.name)
+            if meta.get("owner_id") is None:
+                meta["owner_id"] = 1
+                _meta_path(d.name).write_text(json.dumps(meta))
+
 @app.on_event("startup")
 async def startup():
+    _auth.init_auth_db(BASE_DIR)
+    _migrate_project_ownership()
     _scheduler.start()
     _reload_all_crons()
 
@@ -994,6 +1096,7 @@ async def livereload_ws(project: str, ws: WebSocket):
 class ProjectMeta(BaseModel):
     description: str = ""
     icon: str = "📦"
+    owner_id: Optional[int] = None
 
 def _meta_path(project: str) -> Path:
     return safe_path(project) / "_meta.json"
@@ -1008,13 +1111,17 @@ def _load_meta(project: str) -> dict:
     return {"description": "", "icon": "📦"}
 
 @app.get("/api/projects")
-def list_projects():
+def list_projects(request: Request):
     if not BASE_DIR.exists():
         return []
+    user_id = getattr(request.state, 'user_id', None)
     result = []
     for d in sorted(BASE_DIR.iterdir()):
         if d.is_dir():
             meta = _load_meta(d.name)
+            proj_owner = meta.get("owner_id")
+            if proj_owner is not None and user_id is not None and proj_owner != user_id:
+                continue
             result.append({
                 "name": d.name,
                 "description": meta.get("description", ""),
@@ -1032,8 +1139,11 @@ def get_project_meta(project: str):
 def update_project_meta(project: str, meta: ProjectMeta):
     if not safe_path(project).exists():
         raise HTTPException(404, "Project not found")
-    _meta_path(project).write_text(json.dumps(meta.dict()))
-    return meta.dict()
+    existing = _load_meta(project)
+    new_meta = meta.dict()
+    new_meta["owner_id"] = existing.get("owner_id")  # préserver l'owner
+    _meta_path(project).write_text(json.dumps(new_meta))
+    return new_meta
 
 @app.post("/api/projects/{project}/rename")
 def rename_project(project: str, body: dict):
@@ -1067,13 +1177,14 @@ def rename_project(project: str, body: dict):
     return {"project": new_name}
 
 @app.post("/api/projects/{project}", status_code=201)
-def create_project(project: str, meta: Optional[ProjectMeta] = None):
+def create_project(project: str, request: Request, meta: Optional[ProjectMeta] = None):
     path = safe_path(project)
     if path.exists():
         raise HTTPException(409, "Project already exists")
     path.mkdir(parents=True)
-    if meta:
-        _meta_path(project).write_text(json.dumps(meta.dict()))
+    meta_dict = meta.dict() if meta else {"description": "", "icon": "📦"}
+    meta_dict["owner_id"] = request.state.user_id
+    _meta_path(project).write_text(json.dumps(meta_dict))
     return {"message": f"Project '{project}' created"}
 
 
@@ -1345,6 +1456,7 @@ def export_project(project: str):
 # avec POST /api/projects/{project} qui capturerait "/api/projects/import"
 @app.post("/api/projects-import", status_code=201)
 async def import_project(
+    request: Request,
     file: UploadFile = File(...),
     name: str = Form(...),
 ):
@@ -1383,6 +1495,11 @@ async def import_project(
                     _register_cron(name, job)
         except Exception:
             pass
+
+    # Assigner le projet à l'utilisateur courant
+    meta = _load_meta(name)
+    meta["owner_id"] = request.state.user_id
+    _meta_path(name).write_text(json.dumps(meta))
 
     return {"project": name, "message": f"Projet '{name}' importé avec succès"}
 

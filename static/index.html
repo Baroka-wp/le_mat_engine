@@ -10,14 +10,65 @@
 </head>
 <body>
 
+  <!-- ══ AUTH VIEW ══ -->
+  <div id="view-auth" style="display:none">
+    <div class="auth-bg">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="brand-icon">♟</span>
+          <span class="brand-name">Le Mat</span>
+        </div>
+
+        <!-- Tabs -->
+        <div class="auth-tabs">
+          <button class="auth-tab active" id="tab-login" onclick="showAuthTab('login')">Connexion</button>
+          <button class="auth-tab" id="tab-register" onclick="showAuthTab('register')">Créer un compte</button>
+        </div>
+
+        <!-- Login form -->
+        <form id="form-login" class="auth-form" onsubmit="submitLogin(event)">
+          <div class="auth-field">
+            <label>Email</label>
+            <input id="login-email" type="email" placeholder="vous@example.com" autocomplete="email" required />
+          </div>
+          <div class="auth-field">
+            <label>Mot de passe</label>
+            <input id="login-password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+          </div>
+          <div id="login-error" class="auth-error" style="display:none"></div>
+          <button type="submit" class="btn-accent auth-submit" id="btn-login-submit">Se connecter</button>
+        </form>
+
+        <!-- Register form -->
+        <form id="form-register" class="auth-form" style="display:none" onsubmit="submitRegister(event)">
+          <div class="auth-field">
+            <label>Email</label>
+            <input id="reg-email" type="email" placeholder="vous@example.com" autocomplete="email" required />
+          </div>
+          <div class="auth-field">
+            <label>Mot de passe</label>
+            <input id="reg-password" type="password" placeholder="6 caractères minimum" autocomplete="new-password" required />
+          </div>
+          <div class="auth-field">
+            <label>Confirmer</label>
+            <input id="reg-confirm" type="password" placeholder="••••••••" autocomplete="new-password" required />
+          </div>
+          <div id="reg-error" class="auth-error" style="display:none"></div>
+          <button type="submit" class="btn-accent auth-submit" id="btn-reg-submit">Créer mon compte</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ DASHBOARD VIEW ══ -->
-  <div id="view-dashboard">
+  <div id="view-dashboard" style="display:none">
     <header class="dash-header">
       <div class="dash-brand">
         <span class="brand-icon">♟</span>
         <span class="brand-name">Le Mat</span>
       </div>
       <div class="dash-header-actions">
+        <span id="dash-user-email" class="dash-user-email"></span>
         <button id="btn-import-project-dash" class="btn-icon-dash" title="Importer un projet (.zip)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -26,6 +77,13 @@
           </svg>
         </button>
         <button id="btn-new-project-dash" class="btn-accent">+ Nouveau projet</button>
+        <button id="btn-logout" class="btn-logout" title="Se déconnecter" onclick="logout()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
       </div>
     </header>
     <main class="dash-main">
@@ -523,6 +581,25 @@
 
   <div id="toast"></div>
 
+  <script>
+    // Vérification auth avant Monaco — affiche la vue correcte immédiatement
+    (async function() {
+      const token = localStorage.getItem('lemat_token');
+      if (!token) {
+        document.getElementById('view-auth').style.display = 'flex';
+        return;
+      }
+      // Vérifier que le token est encore valide côté serveur
+      try {
+        const r = await fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) throw new Error();
+      } catch {
+        localStorage.removeItem('lemat_token');
+        localStorage.removeItem('lemat_email');
+        document.getElementById('view-auth').style.display = 'flex';
+      }
+    })();
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

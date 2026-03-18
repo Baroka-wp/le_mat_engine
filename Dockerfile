@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application ───────────────────────────────────────────────────────
 COPY main.py .
+COPY auth.py .
 COPY model_parser.py .
 COPY db_engine.py .
 COPY static/ static/

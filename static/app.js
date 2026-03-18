@@ -1,6 +1,96 @@
 /* ── Le Mat — frontend ──────────────────────────────────────────────── */
 const API = '';
 
+// ── Auth helpers ──────────────────────────────────────────────────────
+function getToken()          { return localStorage.getItem('lemat_token'); }
+function getTokenEmail()     { return localStorage.getItem('lemat_email'); }
+function setToken(t, email)  { localStorage.setItem('lemat_token', t); localStorage.setItem('lemat_email', email); }
+function clearToken()        { localStorage.removeItem('lemat_token'); localStorage.removeItem('lemat_email'); }
+
+function showAuthView() {
+  document.getElementById('view-auth').style.display = 'flex';
+  document.getElementById('view-dashboard').style.display = 'none';
+  document.getElementById('view-editor').style.display = 'none';
+}
+
+function showAuthTab(tab) {
+  document.getElementById('form-login').style.display    = tab === 'login'    ? '' : 'none';
+  document.getElementById('form-register').style.display = tab === 'register' ? '' : 'none';
+  document.getElementById('tab-login').classList.toggle('active',    tab === 'login');
+  document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+  document.getElementById('login-error').style.display = 'none';
+  document.getElementById('reg-error').style.display   = 'none';
+}
+
+async function submitLogin(e) {
+  e.preventDefault();
+  const errEl = document.getElementById('login-error');
+  const btn   = document.getElementById('btn-login-submit');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Connexion…';
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email:    document.getElementById('login-email').value.trim(),
+        password: document.getElementById('login-password').value,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Erreur');
+    setToken(data.access_token, data.email);
+    document.getElementById('view-auth').style.display = 'none';
+    await bootApp();
+  } catch(err) {
+    errEl.textContent    = err.message;
+    errEl.style.display  = 'block';
+    btn.disabled         = false;
+    btn.textContent      = 'Se connecter';
+  }
+}
+
+async function submitRegister(e) {
+  e.preventDefault();
+  const errEl = document.getElementById('reg-error');
+  const btn   = document.getElementById('btn-reg-submit');
+  errEl.style.display = 'none';
+  const pwd  = document.getElementById('reg-password').value;
+  const conf = document.getElementById('reg-confirm').value;
+  if (pwd !== conf) {
+    errEl.textContent = 'Les mots de passe ne correspondent pas';
+    errEl.style.display = 'block'; return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Création…';
+  try {
+    const res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email:    document.getElementById('reg-email').value.trim(),
+        password: pwd,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Erreur');
+    setToken(data.access_token, data.email);
+    document.getElementById('view-auth').style.display = 'none';
+    await bootApp();
+  } catch(err) {
+    errEl.textContent    = err.message;
+    errEl.style.display  = 'block';
+    btn.disabled         = false;
+    btn.textContent      = 'Créer mon compte';
+  }
+}
+
+function logout() {
+  clearToken();
+  showAuthView();
+}
+
 // ── State ────────────────────────────────────────────────────────────
 let currentProject = null;
 let editor         = null;
@@ -50,8 +140,30 @@ require(['vs/editor/editor.main'], () => {
 
 // ── Init ─────────────────────────────────────────────────────────────
 async function init() {
+  const token = getToken();
+  if (!token) {
+    showAuthView();
+    return;
+  }
+  // Vérifier que le token est encore valide
+  try {
+    await fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(r => { if (r.status === 401) throw new Error(); });
+  } catch {
+    clearToken();
+    showAuthView();
+    return;
+  }
+  await bootApp();
+}
+
+async function bootApp() {
   await loadProjects();
-  showDashboard(); // Démarrer sur le dashboard
+  showDashboard();
+  // Afficher l'email dans le header
+  const email = getTokenEmail();
+  const el = document.getElementById('dash-user-email');
+  if (el && email) el.textContent = email;
   setupResizeHandle();
   document.getElementById('btn-run').onclick        = () => runCurrentFile();
   document.getElementById('btn-stop').onclick       = () => stopRun();
@@ -68,11 +180,18 @@ async function init() {
 // ── API helpers ───────────────────────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: {} };
+  const token = getToken();
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(API + path, opts);
+  if (res.status === 401) {
+    clearToken();
+    showAuthView();
+    throw new Error('Session expirée');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || res.statusText);

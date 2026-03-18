@@ -1216,3 +1216,93 @@ button.primary:hover { opacity: .85; }
   width: 24px; height: 24px;
 }
 .btn-icon-dash:hover { background: var(--hover); color: var(--text); }
+
+/* ── Auth view ───────────────────────────────────────────────────────── */
+#view-auth {
+  position: fixed; inset: 0; z-index: 1000;
+  display: none; align-items: center; justify-content: center;
+}
+#view-auth[style*="flex"] {
+  display: flex !important;
+}
+
+.auth-bg {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.auth-card {
+  width: 100%; max-width: 400px;
+  background: var(--sidebar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 36px 40px 40px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.06);
+}
+
+.auth-brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 20px; font-weight: 700; letter-spacing: .4px;
+  color: var(--accent); margin-bottom: 28px;
+}
+.auth-brand .brand-icon { font-size: 24px; }
+
+.auth-tabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.auth-tab {
+  flex: 1; padding: 8px 0; font-size: 13px; font-weight: 500;
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); cursor: pointer; font-family: inherit;
+  transition: color .12s, border-color .12s;
+  margin-bottom: -1px;
+}
+.auth-tab.active {
+  color: var(--accent); border-bottom-color: var(--accent);
+}
+.auth-tab:hover:not(.active) { color: var(--text); }
+
+.auth-form { display: flex; flex-direction: column; gap: 16px; }
+
+.auth-field { display: flex; flex-direction: column; gap: 6px; }
+.auth-field label {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .6px;
+}
+.auth-field input {
+  padding: 9px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); font-size: 14px; font-family: inherit;
+  outline: none; transition: border-color .12s;
+}
+.auth-field input:focus { border-color: var(--accent); }
+
+.auth-error {
+  font-size: 13px; color: var(--danger);
+  background: #fef2f2; border: 1px solid #fecaca;
+  border-radius: var(--radius); padding: 8px 12px;
+}
+
+.auth-submit {
+  margin-top: 4px; padding: 10px 0; width: 100%;
+  font-size: 14px; font-weight: 600;
+}
+
+/* ── Logout button & user email in header ────────────────────────────── */
+.dash-user-email {
+  font-size: 12px; color: var(--muted); padding: 0 4px;
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.btn-logout {
+  width: 36px; height: 36px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: transparent;
+  color: var(--muted); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .12s;
+}
+.btn-logout:hover { background: #fef2f2; border-color: #fecaca; color: var(--danger); }
+
