@@ -18,11 +18,27 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
-def migrate(db_path: Path, sql_statements: list[str]) -> None:
-    """Apply CREATE TABLE IF NOT EXISTS statements."""
+def migrate(db_path: Path, sql_statements: list[str], expected_tables: Optional[list[str]] = None) -> None:
+    """Apply CREATE TABLE IF NOT EXISTS statements and drop orphaned tables."""
     with _connect(db_path) as conn:
         for stmt in sql_statements:
             conn.execute(stmt)
+
+        # Drop tables that no longer exist in the schema
+        if expected_tables is not None:
+            expected_lower = {t.lower() for t in expected_tables}
+            existing = [
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                    "ORDER BY name"
+                ).fetchall()
+            ]
+            for table in existing:
+                if table.lower() not in expected_lower:
+                    conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+
         conn.commit()
 
 
@@ -112,6 +128,34 @@ def delete(db_path: Path, table: str, pk_col: str, pk_val: Any) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+# ── Relations ─────────────────────────────────────────────────────────────────
+
+def select_related_children(
+    db_path: Path, child_table: str, fk_col: str, fk_val: Any, limit: int = 50
+) -> list[dict]:
+    """Fetch rows from child_table where fk_col = fk_val."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f'SELECT * FROM "{child_table}" WHERE "{fk_col}" = ? LIMIT ?',
+            [fk_val, limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def select_related_parent(
+    db_path: Path, parent_table: str, pk_col: str, pk_val: Any
+) -> Optional[dict]:
+    """Fetch the parent row by PK."""
+    return select_one(db_path, parent_table, pk_col, pk_val)
+
+
+def count_related(db_path: Path, table: str, fk_col: str, fk_val: Any) -> int:
+    with _connect(db_path) as conn:
+        return conn.execute(
+            f'SELECT COUNT(*) FROM "{table}" WHERE "{fk_col}" = ?', [fk_val]
+        ).fetchone()[0]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

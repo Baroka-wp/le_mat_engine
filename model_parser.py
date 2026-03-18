@@ -105,10 +105,40 @@ class SchemaDef:
     def get_model(self, name: str) -> Optional[ModelDef]:
         return next((m for m in self.models if m.name.lower() == name.lower()), None)
 
+    def get_relations(self) -> list[dict]:
+        """Extract all FK relationships from the schema."""
+        rels = []
+        for model in self.models:
+            for f in model.fields:
+                if f.ref:
+                    parts = f.ref.split(".")
+                    if len(parts) == 2:
+                        rels.append({
+                            "from": model.name,
+                            "fromField": f.name,
+                            "to": parts[0],
+                            "toField": parts[1],
+                            "type": "many-to-one",
+                        })
+        # Detect junction tables (exactly 2 FKs + optional PK/timestamps)
+        for model in self.models:
+            fk_fields = [f for f in model.fields if f.ref]
+            if len(fk_fields) == 2:
+                targets = [f.ref.split(".")[0] for f in fk_fields if "." in f.ref]
+                if len(targets) == 2:
+                    rels.append({
+                        "from": targets[0],
+                        "through": model.name,
+                        "to": targets[1],
+                        "type": "many-to-many",
+                    })
+        return rels
+
     def to_dict(self) -> dict:
         return {
             "database": self.database,
             "models": [m.to_dict() for m in self.models],
+            "relations": self.get_relations(),
         }
 
 

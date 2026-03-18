@@ -1650,11 +1650,12 @@ def sync_schema(project: str):
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     stmts = model_parser.to_sql(schema)
-    db_engine.migrate(db_path, stmts)
+    expected_tables = [m.name for m in schema.models]
+    db_engine.migrate(db_path, stmts, expected_tables=expected_tables)
 
     return {
         "message": f"Schema synced → {schema.database}",
-        "tables": [m.name for m in schema.models],
+        "tables": expected_tables,
         "statements": stmts,
     }
 
@@ -1768,6 +1769,77 @@ def data_delete(project: str, table: str, pk: str):
     if not db_engine.delete(db_path, real_table, pk_col, pk_val):
         raise HTTPException(404, f"Row {pk} not found")
     return {"deleted": True, "id": pk}
+
+
+# ── Related data ──────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project}/data/{table}/{pk}/related")
+def data_related(project: str, table: str, pk: str):
+    """Return parent and child records for a given row, based on schema @ref relations."""
+    schema, db_path = get_schema_and_db(project)
+    if not db_path or not db_path.exists():
+        raise HTTPException(404, "No database found")
+    if not schema:
+        return {"parents": [], "children": []}
+
+    real_table = resolve_table(schema, db_path, table)
+    pk_col = db_engine.get_pk_col(db_path, real_table)
+    pk_val: Any = int(pk) if pk.isdigit() else pk
+
+    current_row = db_engine.select_one(db_path, real_table, pk_col, pk_val)
+    if not current_row:
+        raise HTTPException(404, "Row not found")
+
+    parents = []
+    children = []
+
+    current_model = schema.get_model(real_table)
+
+    # Parents: fields in current model with @ref → fetch the referenced row
+    if current_model:
+        for f in current_model.fields:
+            if f.ref and "." in f.ref:
+                parts = f.ref.split(".")
+                parent_table, parent_field = parts[0], parts[1]
+                fk_val = current_row.get(f.name)
+                if fk_val is not None:
+                    try:
+                        parent_row = db_engine.select_related_parent(
+                            db_path, parent_table, parent_field, fk_val
+                        )
+                        if parent_row:
+                            parents.append({
+                                "table": parent_table,
+                                "field": f.name,
+                                "refField": parent_field,
+                                "row": parent_row,
+                            })
+                    except Exception:
+                        pass
+
+    # Children: other models that have @ref(CurrentModel.field)
+    for model in schema.models:
+        if model.name.lower() == real_table.lower():
+            continue
+        for f in model.fields:
+            if f.ref and "." in f.ref:
+                parts = f.ref.split(".")
+                if parts[0].lower() == real_table.lower() and parts[1].lower() == pk_col.lower():
+                    try:
+                        count = db_engine.count_related(db_path, model.name, f.name, pk_val)
+                        rows = db_engine.select_related_children(
+                            db_path, model.name, f.name, pk_val, limit=20
+                        )
+                        children.append({
+                            "table": model.name,
+                            "fkField": f.name,
+                            "total": count,
+                            "rows": rows,
+                        })
+                    except Exception:
+                        pass
+
+    return {"parents": parents, "children": children}
 
 
 # ── Code Execution ────────────────────────────────────────────────────────────

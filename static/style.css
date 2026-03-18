@@ -478,13 +478,17 @@ body {
   display: flex; align-items: center; gap: 4px;
 }
 .dv-form-type { font-size: 10px; color: var(--muted); font-weight: 400; font-family: monospace; }
-.dv-form-field input {
+.dv-form-field input,
+.dv-form-field select {
   padding: 5px 8px; font-size: 13px;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg); color: var(--text); outline: none;
-  transition: border-color .12s;
+  transition: border-color .12s; font-family: inherit; width: 100%;
 }
-.dv-form-field input:focus { border-color: var(--accent); }
+.dv-form-field input:focus,
+.dv-form-field select:focus { border-color: var(--accent); }
+.dv-form-ref-select { cursor: pointer; }
+.dv-form-ref-select option { padding: 4px 8px; }
 .dv-form-actions {
   display: flex; gap: 6px; padding: 6px 14px 10px;
 }
@@ -1470,20 +1474,34 @@ button.primary:hover { opacity: .85; }
 .lemat-toolbar .btn-lemat-code:hover { color: var(--text); }
 
 .lemat-canvas {
-  flex: 1; overflow: auto; padding: 24px;
-  display: flex; flex-wrap: wrap; gap: 20px; align-content: flex-start;
+  flex: 1; overflow: auto; position: relative;
+  background:
+    radial-gradient(circle, var(--border) .8px, transparent .8px);
+  background-size: 24px 24px;
+  background-position: 12px 12px;
+  min-height: 400px;
 }
 
 .lemat-model-card {
+  position: absolute; width: 300px;
   background: var(--sidebar); border: 1px solid var(--border);
-  border-radius: 8px; min-width: 260px; max-width: 340px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.04); overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06); overflow: hidden;
+  transition: box-shadow .15s;
+  z-index: 2;
+}
+.lemat-model-card.dragging {
+  box-shadow: 0 8px 24px rgba(0,0,0,.15); opacity: .92;
+  z-index: 100 !important;
 }
 .lemat-model-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
   background: var(--accent); color: #fff;
+  cursor: grab; user-select: none;
 }
+.lemat-model-header:active { cursor: grabbing; }
+.lemat-drag-handle { flex-shrink: 0; opacity: .5; margin-right: 2px; }
 .lemat-model-name {
   font-size: 14px; font-weight: 700; letter-spacing: .3px;
 }
@@ -1516,7 +1534,8 @@ button.primary:hover { opacity: .85; }
 .lemat-badge.def { background: #f0fdf4; color: #166534; }
 .lemat-field-del {
   background: none; border: none; color: var(--muted); cursor: pointer;
-  font-size: 11px; opacity: 0; transition: opacity .1s;
+  font-size: 11px; opacity: 0; transition: opacity .1s; padding: 1px;
+  display: flex; align-items: center;
 }
 .lemat-field-row:hover .lemat-field-del { opacity: 1; }
 .lemat-field-del:hover { color: var(--danger); }
@@ -1554,7 +1573,8 @@ button.primary:hover { opacity: .85; }
 
 .lemat-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  flex: 1; gap: 12px; color: var(--muted); font-size: 14px;
+  position: absolute; inset: 0;
+  gap: 12px; color: var(--muted); font-size: 14px;
 }
 .lemat-empty svg { opacity: .3; }
 .lemat-empty button { margin-top: 8px; }
@@ -1576,10 +1596,118 @@ button.primary:hover { opacity: .85; }
 .lemat-code-bar span { font-weight: 500; color: var(--text); }
 .lemat-code-bar .btn-lemat { margin-left: 0; }
 
+/* ── Relation lines SVG overlay ─────────────────────────────────────── */
+.lemat-relations-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; overflow: visible; }
+.rel-line {
+  stroke: #8b5cf6; stroke-width: 2; fill: none;
+  stroke-dasharray: 6 3; opacity: .55;
+  transition: opacity .15s;
+}
+.rel-label {
+  font-size: 10px; fill: #8b5cf6; opacity: .7;
+  text-anchor: middle; pointer-events: none;
+}
+.connect-preview-line {
+  stroke: #8b5cf6; stroke-width: 2; stroke-dasharray: 4 4;
+  opacity: .8; fill: none;
+}
+
+/* ── Connect mode ──────────────────────────────────────────────────── */
+.lemat-field-connect {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 11px; opacity: 0; transition: opacity .1s; padding: 1px;
+}
+.lemat-field-row:hover .lemat-field-connect { opacity: .6; }
+.lemat-field-connect:hover { opacity: 1 !important; color: #8b5cf6; }
+
+.connect-source {
+  outline: 2px solid #8b5cf6 !important;
+  background: #ede9fe !important;
+  border-radius: 3px;
+}
+.connect-active .lemat-field-row.connect-target {
+  cursor: crosshair;
+  transition: all .15s;
+  position: relative;
+}
+.connect-active .lemat-field-row.connect-target::after {
+  content: ''; position: absolute; inset: 0;
+  border: 2px dashed rgba(139,92,246,.3); border-radius: 3px;
+  pointer-events: none;
+}
+.connect-active .lemat-field-row.connect-target:hover {
+  outline: 2px solid #8b5cf6;
+  background: #ede9fe;
+}
+
+/* ── Related data panel (inside data grid) ─────────────────────────── */
+.row-expanded > td { background: var(--hover) !important; }
+.dv-related-row > td { padding: 0 !important; border-bottom: 2px solid var(--accent); }
+
+.dv-related-panel {
+  padding: 12px 16px; background: var(--bg);
+  border-left: 3px solid var(--accent);
+}
+.dv-related-loading { padding: 12px; color: var(--muted); font-size: 12px; }
+.dv-related-empty { padding: 12px; color: var(--muted); font-size: 12px; font-style: italic; }
+
+.dv-related-section { margin-bottom: 10px; }
+.dv-related-section:last-child { margin-bottom: 0; }
+.dv-related-section-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .8px; color: var(--muted); margin-bottom: 6px;
+}
+
+.dv-related-badge {
+  font-size: 10px; padding: 2px 6px; border-radius: 3px;
+  font-weight: 600; display: inline-block;
+}
+.dv-related-badge.parent { background: #ede9fe; color: #5b21b6; }
+.dv-related-badge.child { background: #dbeafe; color: #1e40af; }
+
+.dv-related-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-radius: var(--radius);
+  font-size: 12px; transition: background .1s;
+}
+.dv-related-item:hover { background: var(--hover); }
+.dv-related-via { color: var(--muted); font-size: 11px; }
+.dv-related-preview { color: var(--text); font-weight: 500; }
+
+.dv-related-group { margin-bottom: 8px; }
+.dv-related-group-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+}
+.dv-related-count { color: var(--muted); font-size: 11px; }
+
+.dv-related-mini-table { overflow-x: auto; }
+.dv-related-mini-table table {
+  border-collapse: collapse; font-size: 11px; width: 100%; white-space: nowrap;
+}
+.dv-related-mini-table th {
+  background: var(--sidebar); padding: 3px 8px; text-align: left;
+  font-weight: 600; color: var(--muted); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 1px solid var(--border);
+}
+.dv-related-mini-table td {
+  padding: 3px 8px; border-bottom: 1px solid var(--border); color: var(--text);
+}
+.dv-related-mini-table tr:hover td { background: var(--hover); }
+.dv-related-more { text-align: center; color: var(--muted); font-style: italic; }
+
+.btn-row-expand {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 1px 4px; border-radius: 3px;
+}
+.btn-row-expand:hover { color: var(--accent); }
+.btn-row-expand svg { width: 13px; height: 13px; }
+
+.row-actions-cell { white-space: nowrap; }
+
 /* Responsive lemat canvas */
 @media (max-width: 900px) {
-  .lemat-canvas { padding: 12px; gap: 12px; }
-  .lemat-model-card { min-width: 100%; max-width: 100%; }
+  .lemat-model-card { width: 260px !important; }
   .lemat-toolbar { flex-wrap: wrap; gap: 6px; }
   .lemat-field-edit { flex-wrap: wrap; }
 }

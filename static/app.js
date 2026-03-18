@@ -1380,6 +1380,18 @@ function showLematVisual(tab) {
 
   function markDirty() { tab.modified = true; renderTabs(); }
 
+  // ── Card positions (stored per model for drag) ─────────────────────
+  const CARD_W = 300, CARD_GAP = 30, CARD_PAD = 24;
+  function autoLayout() {
+    const cols = Math.max(1, Math.floor((canvas.clientWidth - CARD_PAD) / (CARD_W + CARD_GAP)));
+    schema.models.forEach((model, i) => {
+      if (!model._pos) {
+        const col = i % cols, row = Math.floor(i / cols);
+        model._pos = { x: CARD_PAD + col * (CARD_W + CARD_GAP), y: CARD_PAD + row * 260 };
+      }
+    });
+  }
+
   function render() {
     canvas.innerHTML = '';
     if (!schema.models.length) {
@@ -1390,16 +1402,22 @@ function showLematVisual(tab) {
       </div>`;
       return;
     }
+
+    autoLayout();
+
     schema.models.forEach((model, mi) => {
       const card = document.createElement('div');
       card.className = 'lemat-model-card';
+      card.dataset.model = model.name;
+      card.style.left = model._pos.x + 'px';
+      card.style.top = model._pos.y + 'px';
 
-      // Header
+      // Header (draggable)
       const header = document.createElement('div');
       header.className = 'lemat-model-header';
       header.innerHTML = `
         <div class="lemat-model-name-wrap">
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.3"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12"/></svg>
+          <svg class="lemat-drag-handle" viewBox="0 0 10 16" width="8" height="14" fill="rgba(255,255,255,.5)"><circle cx="3" cy="3" r="1.2"/><circle cx="7" cy="3" r="1.2"/><circle cx="3" cy="8" r="1.2"/><circle cx="7" cy="8" r="1.2"/><circle cx="3" cy="13" r="1.2"/><circle cx="7" cy="13" r="1.2"/></svg>
           <span class="lemat-model-name">${model.name}</span>
           <span class="lemat-model-count">${model.fields.length} champ${model.fields.length > 1 ? 's' : ''}</span>
         </div>
@@ -1411,13 +1429,44 @@ function showLematVisual(tab) {
             <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 5h10l-1 9H4L3 5z"/><path d="M6 5V3h4v2"/><path d="M1 5h14"/></svg>
           </button>
         </div>`;
-      header.querySelector('.btn-rename-model').onclick = () => {
+
+      // ── Drag to move card ──────────────────────────────────────────
+      let dragState = null;
+      header.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return; // ignore clicks on buttons
+        e.preventDefault();
+        const startX = e.clientX, startY = e.clientY;
+        const origX = model._pos.x, origY = model._pos.y;
+        card.classList.add('dragging');
+        card.style.zIndex = 100;
+
+        const onMove = (e2) => {
+          model._pos.x = Math.max(0, origX + e2.clientX - startX);
+          model._pos.y = Math.max(0, origY + e2.clientY - startY);
+          card.style.left = model._pos.x + 'px';
+          card.style.top = model._pos.y + 'px';
+          drawRelationLines();
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          card.classList.remove('dragging');
+          card.style.zIndex = '';
+          expandCanvasIfNeeded();
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+
+      header.querySelector('.btn-rename-model').onclick = (e) => {
+        e.stopPropagation();
         prompt_('Nom du modèle', model.name, (n) => {
           if (!n || n === model.name) return;
           model.name = n; markDirty(); render();
         });
       };
-      header.querySelector('.btn-del-model').onclick = () => {
+      header.querySelector('.btn-del-model').onclick = (e) => {
+        e.stopPropagation();
         confirmDelete(`Supprimer le modèle "${model.name}" ?`, () => {
           schema.models.splice(mi, 1); markDirty(); render();
         });
@@ -1430,21 +1479,42 @@ function showLematVisual(tab) {
       model.fields.forEach((f, fi) => {
         const row = document.createElement('div');
         row.className = 'lemat-field-row';
+        row.dataset.field = f.name;
+        row.dataset.model = model.name;
+        if (f.pk) row.dataset.pk = '1';
         let badges = '';
         if (f.pk)       badges += '<span class="lemat-badge pk">PK</span>';
         if (f.required && !f.pk) badges += '<span class="lemat-badge req">REQ</span>';
         if (f.unique)   badges += '<span class="lemat-badge uq">UQ</span>';
-        if (f.ref)      badges += `<span class="lemat-badge ref">→ ${f.ref}</span>`;
+        if (f.ref)      badges += `<span class="lemat-badge ref" title="Cliquer pour supprimer la relation">→ ${f.ref}</span>`;
         if (f.default_) badges += `<span class="lemat-badge def">= ${f.default_}</span>`;
         row.innerHTML = `
           <span class="lemat-field-name">${f.name}</span>
           <span class="lemat-field-type">${f.type}</span>
           <span class="lemat-field-badges">${badges}</span>
-          <button class="lemat-field-del" title="Supprimer">✕</button>`;
+          <button class="lemat-field-connect" title="Connecter à un autre modèle">
+            <svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="3" cy="7" r="2"/><circle cx="11" cy="7" r="2"/><line x1="5" y1="7" x2="9" y2="7"/></svg>
+          </button>
+          <button class="lemat-field-del" title="Supprimer">
+            <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>
+          </button>`;
         row.querySelector('.lemat-field-del').onclick = (e) => {
           e.stopPropagation();
           model.fields.splice(fi, 1); markDirty(); render();
         };
+        row.querySelector('.lemat-field-connect').onclick = (e) => {
+          e.stopPropagation();
+          startConnectMode(model, f, row);
+        };
+        // Click ref badge → remove relation
+        const refBadge = row.querySelector('.lemat-badge.ref');
+        if (refBadge) {
+          refBadge.style.cursor = 'pointer';
+          refBadge.onclick = (e) => {
+            e.stopPropagation();
+            f.ref = null; markDirty(); render();
+          };
+        }
         row.onclick = () => showFieldEditor(fieldList, row, f, model, () => { markDirty(); render(); });
         fieldList.appendChild(row);
       });
@@ -1459,11 +1529,178 @@ function showLematVisual(tab) {
         model.fields.push(nf); markDirty(); render();
         const rows = card.querySelectorAll('.lemat-field-row');
         const lastRow = rows[rows.length - 1];
-        if (lastRow) lastRow.click(); // open editor
+        if (lastRow) lastRow.click();
       };
       card.appendChild(addBtn);
       canvas.appendChild(card);
     });
+
+    expandCanvasIfNeeded();
+    requestAnimationFrame(() => drawRelationLines());
+  }
+
+  function expandCanvasIfNeeded() {
+    let maxX = 0, maxY = 0;
+    schema.models.forEach(m => {
+      if (m._pos) {
+        maxX = Math.max(maxX, m._pos.x + CARD_W + CARD_PAD);
+        maxY = Math.max(maxY, m._pos.y + 300);
+      }
+    });
+    canvas.style.minWidth = maxX + 'px';
+    canvas.style.minHeight = maxY + 'px';
+  }
+
+  // ── SVG layer for relation lines + connect preview ────────────────────
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svgLayer = document.createElementNS(svgNS, 'svg');
+  svgLayer.classList.add('lemat-relations-svg');
+  canvas.appendChild(svgLayer);
+
+  function drawRelationLines() {
+    // Clear old lines but keep the svgLayer in DOM
+    svgLayer.innerHTML = '';
+    svgLayer.setAttribute('width', Math.max(canvas.scrollWidth, canvas.clientWidth));
+    svgLayer.setAttribute('height', Math.max(canvas.scrollHeight, canvas.clientHeight));
+
+    // Arrowhead marker
+    const defs = document.createElementNS(svgNS, 'defs');
+    const marker = document.createElementNS(svgNS, 'marker');
+    marker.setAttribute('id', 'rel-arrow');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '9'); marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '7'); marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    const ap = document.createElementNS(svgNS, 'path');
+    ap.setAttribute('d', 'M 0 1 L 8 5 L 0 9 Z');
+    ap.setAttribute('fill', '#8b5cf6');
+    marker.appendChild(ap);
+    defs.appendChild(marker);
+    svgLayer.appendChild(defs);
+
+    const canvasRect = canvas.getBoundingClientRect();
+
+    schema.models.forEach(model => {
+      model.fields.forEach(f => {
+        if (!f.ref || !f.ref.includes('.')) return;
+        const [tgtModel, tgtField] = f.ref.split('.');
+        const srcRow = canvas.querySelector(`.lemat-field-row[data-model="${model.name}"][data-field="${f.name}"]`);
+        const tgtRow = canvas.querySelector(`.lemat-field-row[data-model="${tgtModel}"][data-field="${tgtField}"]`);
+        const tgtCard = canvas.querySelector(`.lemat-model-card[data-model="${tgtModel}"]`);
+        if (!srcRow || !tgtCard) return;
+        const tgtEl = tgtRow || tgtCard;
+
+        const sr = srcRow.getBoundingClientRect();
+        const tr = tgtEl.getBoundingClientRect();
+
+        const sx = sr.right - canvasRect.left + canvas.scrollLeft;
+        const sy = sr.top + sr.height / 2 - canvasRect.top + canvas.scrollTop;
+        const tx = tr.left - canvasRect.left + canvas.scrollLeft;
+        const ty = tr.top + tr.height / 2 - canvasRect.top + canvas.scrollTop;
+
+        // Smart bezier: if target is to the left, curve goes left
+        const goRight = tx > sx;
+        const cpDist = Math.max(50, Math.abs(tx - sx) * 0.35);
+        const c1x = goRight ? sx + cpDist : sx - cpDist;
+        const c2x = goRight ? tx - cpDist : tx + cpDist;
+
+        const path = document.createElementNS(svgNS, 'path');
+        path.setAttribute('d', `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${tx} ${ty}`);
+        path.classList.add('rel-line');
+        path.setAttribute('marker-end', 'url(#rel-arrow)');
+        svgLayer.appendChild(path);
+
+        // Midpoint label
+        const mx = (sx + tx) / 2, my = (sy + ty) / 2 - 10;
+        const lbl = document.createElementNS(svgNS, 'text');
+        lbl.setAttribute('x', mx); lbl.setAttribute('y', my);
+        lbl.classList.add('rel-label');
+        lbl.textContent = `${f.name} → ${tgtModel}`;
+        svgLayer.appendChild(lbl);
+      });
+    });
+  }
+
+  // ── Connect mode (click-to-link with live preview line) ────────────────
+  let connectMode = null;
+  let _connectPreviewLine = null;
+
+  function startConnectMode(model, field, sourceRow) {
+    cancelConnectMode();
+    connectMode = { sourceModel: model, sourceField: field, sourceRow };
+    sourceRow.classList.add('connect-source');
+    canvas.classList.add('connect-active');
+
+    // Create a preview line that follows the mouse
+    _connectPreviewLine = document.createElementNS(svgNS, 'line');
+    _connectPreviewLine.classList.add('connect-preview-line');
+    const sr = sourceRow.getBoundingClientRect();
+    const cr = canvas.getBoundingClientRect();
+    const startX = sr.right - cr.left + canvas.scrollLeft;
+    const startY = sr.top + sr.height / 2 - cr.top + canvas.scrollTop;
+    _connectPreviewLine.setAttribute('x1', startX);
+    _connectPreviewLine.setAttribute('y1', startY);
+    _connectPreviewLine.setAttribute('x2', startX);
+    _connectPreviewLine.setAttribute('y2', startY);
+    svgLayer.appendChild(_connectPreviewLine);
+
+    const onMouseMove = (e) => {
+      if (!_connectPreviewLine) return;
+      const mx = e.clientX - cr.left + canvas.scrollLeft;
+      const my = e.clientY - cr.top + canvas.scrollTop;
+      _connectPreviewLine.setAttribute('x2', mx);
+      _connectPreviewLine.setAttribute('y2', my);
+    };
+    canvas.addEventListener('mousemove', onMouseMove);
+    connectMode._mouseMoveHandler = onMouseMove;
+
+    // Highlight valid targets (all fields, not just PK — user might want any field)
+    canvas.querySelectorAll('.lemat-field-row').forEach(row => {
+      if (row.dataset.model !== model.name) {
+        row.classList.add('connect-target');
+        row._connectHandler = (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          field.ref = `${row.dataset.model}.${row.dataset.field}`;
+          markDirty();
+          cancelConnectMode();
+          render();
+          toast(`Relation créée: ${field.name} → ${row.dataset.model}.${row.dataset.field}`, 'success');
+        };
+        row.addEventListener('click', row._connectHandler, { capture: true });
+      }
+    });
+
+    const escHandler = (e) => { if (e.key === 'Escape') cancelConnectMode(); };
+    document.addEventListener('keydown', escHandler);
+    connectMode._escHandler = escHandler;
+
+    // Click on canvas background → cancel
+    const bgHandler = (e) => {
+      if (e.target === canvas || e.target === svgLayer) cancelConnectMode();
+    };
+    canvas.addEventListener('click', bgHandler);
+    connectMode._bgHandler = bgHandler;
+
+    toast('Clique sur un champ cible pour créer la relation. Escape pour annuler.', 'info');
+  }
+
+  function cancelConnectMode() {
+    if (!connectMode) return;
+    connectMode.sourceRow.classList.remove('connect-source');
+    canvas.classList.remove('connect-active');
+    if (connectMode._mouseMoveHandler) canvas.removeEventListener('mousemove', connectMode._mouseMoveHandler);
+    if (connectMode._bgHandler) canvas.removeEventListener('click', connectMode._bgHandler);
+    canvas.querySelectorAll('.connect-target').forEach(row => {
+      row.classList.remove('connect-target');
+      if (row._connectHandler) {
+        row.removeEventListener('click', row._connectHandler, { capture: true });
+        delete row._connectHandler;
+      }
+    });
+    if (connectMode._escHandler) document.removeEventListener('keydown', connectMode._escHandler);
+    if (_connectPreviewLine) { _connectPreviewLine.remove(); _connectPreviewLine = null; }
+    connectMode = null;
   }
 
   function showFieldEditor(parentEl, rowEl, field, model, onDone) {
@@ -1767,22 +2004,75 @@ async function showDataTab(tab) {
   formWrap.classList.add('dv-create-form');
   formWrap.style.display = 'none';
 
-  const editableCols = columns.filter(c => !c.pk || !['INTEGER'].includes(c.type.toUpperCase()));
   // For auto-increment PK, skip it
   const formCols = columns.filter(c => {
-    if (c.pk && c.type.toUpperCase() === 'INTEGER') return false; // autoincrement
+    if (c.pk && c.type.toUpperCase() === 'INTEGER') return false;
     return true;
   });
+
+  // Detect FK fields from schema models
+  const schemaModel = schemaInfo.schema
+    ? (schemaInfo.schema.models || []).find(m => m.name.toLowerCase() === tab.tableName.toLowerCase())
+    : null;
+
+  // Build a map: colName → { refTable, refField } from schema
+  const refMap = {};
+  if (schemaModel) {
+    schemaModel.fields.forEach(sf => {
+      if (sf.ref) {
+        const [refTable, refField] = sf.ref.split('.');
+        refMap[sf.name] = { refTable, refField };
+      }
+    });
+  }
+
+  // Pre-fetch referenced table rows for FK selects
+  const refDataCache = {};
+  const refFetches = Object.entries(refMap).map(async ([colName, ref]) => {
+    try {
+      const refData = await api('GET', `/api/projects/${currentProject}/data/${ref.refTable}?limit=200`);
+      refDataCache[colName] = { ref, rows: refData.rows || [] };
+    } catch(e) { /* ignore */ }
+  });
+  await Promise.all(refFetches);
 
   let formHTML = '<div class="dv-form-header"><span>Nouvel enregistrement</span></div><div class="dv-form-fields">';
   formCols.forEach(col => {
     const required = col.notnull && !col.dflt_value ? ' *' : '';
-    const placeholder = col.dflt_value ? `défaut: ${col.dflt_value}` : col.type;
-    formHTML += `
-      <div class="dv-form-field">
-        <label>${col.name}${required} <span class="dv-form-type">${col.type}</span></label>
-        <input type="text" name="${col.name}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
-      </div>`;
+    const refInfo = refDataCache[col.name];
+
+    if (refInfo && refInfo.rows.length) {
+      // FK field → render a <select> with referenced rows
+      const ref = refInfo.ref;
+      const rows = refInfo.rows;
+      // Determine a display column (first non-PK text column, or second column)
+      const refTableInfo = schemaInfo.tables.find(t => t.name === ref.refTable);
+      const refCols = refTableInfo ? refTableInfo.columns.map(c => c.name) : (rows.length ? Object.keys(rows[0]) : []);
+      const pkCol = ref.refField;
+      const displayCol = refCols.find(c => c !== pkCol && c.toLowerCase() !== 'createdat') || refCols[1] || pkCol;
+
+      let options = `<option value="">— Sélectionner ${ref.refTable} —</option>`;
+      rows.forEach(r => {
+        const pkVal = r[pkCol];
+        const display = r[displayCol] || r[pkCol];
+        const extra = displayCol !== pkCol ? ` (${pkCol}: ${pkVal})` : '';
+        options += `<option value="${pkVal}">${display}${extra}</option>`;
+      });
+
+      formHTML += `
+        <div class="dv-form-field">
+          <label>${col.name}${required} <span class="dv-form-type">→ ${ref.refTable}</span></label>
+          <select name="${col.name}" class="dv-form-ref-select">${options}</select>
+        </div>`;
+    } else {
+      // Normal field → text input
+      const placeholder = col.dflt_value ? `défaut: ${col.dflt_value}` : col.type;
+      formHTML += `
+        <div class="dv-form-field">
+          <label>${col.name}${required} <span class="dv-form-type">${col.type}</span></label>
+          <input type="text" name="${col.name}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
+        </div>`;
+    }
   });
   formHTML += '</div><div class="dv-form-actions">';
   formHTML += `<button class="dv-btn dv-btn-primary" id="dv-form-save">${SVG_ICONS.save} Enregistrer</button>`;
@@ -1837,13 +2127,110 @@ async function showDataTab(tab) {
       });
       // Actions cell
       const actionsTd = document.createElement('td');
+      actionsTd.classList.add('row-actions-cell');
+      const hasRelations = schemaInfo.schema && schemaInfo.schema.relations && schemaInfo.schema.relations.length > 0;
       actionsTd.innerHTML = `<span class="row-actions">
+        ${hasRelations ? `<button class="btn-row-expand" title="Voir les relations">${SVG_ICONS.table}</button>` : ''}
         <button class="btn-row-del" title="Supprimer">${SVG_ICONS.trash}</button>
       </span>`;
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
+
+    // Expand row to show related data
+    tbody.addEventListener('click', async (e) => {
+      const expandBtn = e.target.closest('.btn-row-expand');
+      if (expandBtn) {
+        const tr = expandBtn.closest('tr');
+        // Toggle: if already expanded, close it
+        const existing = tr.nextElementSibling;
+        if (existing && existing.classList.contains('dv-related-row')) {
+          existing.remove();
+          tr.classList.remove('row-expanded');
+          return;
+        }
+        // Close any other expanded row
+        tbody.querySelectorAll('.dv-related-row').forEach(el => el.remove());
+        tbody.querySelectorAll('.row-expanded').forEach(el => el.classList.remove('row-expanded'));
+
+        const rowData = JSON.parse(tr.dataset.rowData);
+        const pkCol = columns.find(c => c.pk);
+        const pkName = pkCol ? pkCol.name : cols[0];
+        const pkVal = rowData[pkName];
+
+        tr.classList.add('row-expanded');
+        const relTr = document.createElement('tr');
+        relTr.classList.add('dv-related-row');
+        const relTd = document.createElement('td');
+        relTd.colSpan = cols.length + 1;
+        relTd.innerHTML = '<div class="dv-related-loading">Chargement des relations...</div>';
+        relTr.appendChild(relTd);
+        tr.after(relTr);
+
+        try {
+          const related = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}/related`);
+          let html = '<div class="dv-related-panel">';
+
+          // Parents
+          if (related.parents.length) {
+            html += '<div class="dv-related-section"><div class="dv-related-section-title">Références</div>';
+            related.parents.forEach(p => {
+              const display = Object.values(p.row).slice(0, 3).join(' · ');
+              html += `<div class="dv-related-item dv-related-parent" data-table="${p.table}" data-pk="${Object.values(p.row)[0]}">
+                <span class="dv-related-badge parent">${p.table}</span>
+                <span class="dv-related-via">${p.field} →</span>
+                <span class="dv-related-preview">${display}</span>
+              </div>`;
+            });
+            html += '</div>';
+          }
+
+          // Children
+          if (related.children.length) {
+            html += '<div class="dv-related-section"><div class="dv-related-section-title">Référencé par</div>';
+            related.children.forEach(c => {
+              html += `<div class="dv-related-group">
+                <div class="dv-related-group-header">
+                  <span class="dv-related-badge child">${c.table}</span>
+                  <span class="dv-related-count">${c.total} enregistrement${c.total > 1 ? 's' : ''}</span>
+                </div>`;
+              if (c.rows.length) {
+                html += '<div class="dv-related-mini-table"><table>';
+                const childCols = Object.keys(c.rows[0]);
+                html += '<tr>' + childCols.map(cc => `<th>${cc}</th>`).join('') + '</tr>';
+                c.rows.slice(0, 5).forEach(r => {
+                  html += '<tr>' + childCols.map(cc => {
+                    const v = r[cc];
+                    return `<td>${v === null ? '<em>null</em>' : v}</td>`;
+                  }).join('') + '</tr>';
+                });
+                if (c.total > 5) html += `<tr><td colspan="${childCols.length}" class="dv-related-more">+ ${c.total - 5} autres...</td></tr>`;
+                html += '</table></div>';
+              }
+              html += '</div>';
+            });
+            html += '</div>';
+          }
+
+          if (!related.parents.length && !related.children.length) {
+            html += '<div class="dv-related-empty">Aucune relation trouvée pour cet enregistrement.</div>';
+          }
+
+          html += '</div>';
+          relTd.innerHTML = html;
+
+          // Click parent → navigate to that table/row
+          relTd.querySelectorAll('.dv-related-parent').forEach(el => {
+            el.style.cursor = 'pointer';
+            el.onclick = () => openDataView(el.dataset.table);
+          });
+        } catch(err) {
+          relTd.innerHTML = `<div class="dv-related-empty">Erreur: ${err.message}</div>`;
+        }
+        return;
+      }
+    });
 
     // Delete row
     tbody.addEventListener('click', async (e) => {
@@ -1876,8 +2263,9 @@ async function showDataTab(tab) {
     formWrap.style.display = show ? 'flex' : 'none';
     if (show) {
       formWrap.querySelectorAll('input').forEach(inp => inp.value = '');
-      const firstInput = formWrap.querySelector('input');
-      if (firstInput) setTimeout(() => firstInput.focus(), 50);
+      formWrap.querySelectorAll('select').forEach(sel => sel.selectedIndex = 0);
+      const firstField = formWrap.querySelector('input, select');
+      if (firstField) setTimeout(() => firstField.focus(), 50);
     }
   };
 
@@ -1891,7 +2279,7 @@ async function showDataTab(tab) {
 
   // Save new record
   formWrap.querySelector('#dv-form-save').onclick = async () => {
-    const inputs = formWrap.querySelectorAll('.dv-form-fields input');
+    const inputs = formWrap.querySelectorAll('.dv-form-fields input, .dv-form-fields select');
     const record = {};
     let hasValue = false;
     inputs.forEach(inp => {
