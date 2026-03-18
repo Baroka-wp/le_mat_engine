@@ -86,6 +86,8 @@ body {
   color: var(--muted);
   flex-shrink: 0;
 }
+.sidebar-header > span { display: inline-flex; align-items: center; gap: 5px; }
+.sidebar-header > span svg { flex-shrink: 0; }
 .sidebar-header-actions { display: flex; gap: 4px; }
 
 .sidebar-header button,
@@ -94,17 +96,17 @@ body {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 11px;
   padding: 4px;
   border-radius: var(--radius);
   text-decoration: none;
-  line-height: 0;
-  display: flex;
+  line-height: 1;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 3px;
 }
 .sidebar-header button svg,
-.sidebar-header a svg { display: block; }
+.sidebar-header a svg { display: block; flex-shrink: 0; }
 .sidebar-header button:hover,
 .sidebar-header a:hover { color: var(--text); background: var(--hover); }
 
@@ -271,6 +273,7 @@ body {
 #custom-cmd::placeholder { color: var(--muted); }
 
 #run-toolbar button {
+  display: inline-flex; align-items: center; gap: 4px;
   background: none;
   border: 1px solid var(--border);
   color: var(--text);
@@ -280,6 +283,7 @@ body {
   font-size: 12px;
   white-space: nowrap;
 }
+#run-toolbar button svg { flex-shrink: 0; }
 #run-toolbar button:hover:not(:disabled) { background: var(--hover); }
 #run-toolbar button:disabled { opacity: .35; cursor: default; }
 #btn-run  { color: var(--accent2); border-color: var(--accent2); font-weight: 600; }
@@ -377,13 +381,6 @@ body {
 }
 .data-view-toolbar span { color: var(--muted); }
 .data-view-toolbar strong { color: var(--text); }
-.data-view-toolbar button {
-  padding: 3px 10px; font-size: 12px;
-  background: none; border: 1px solid var(--border); border-radius: var(--radius);
-  color: var(--text); cursor: pointer;
-}
-.data-view-toolbar button:hover { background: var(--hover); }
-.data-view-toolbar button.danger { color: var(--danger); border-color: var(--danger); }
 
 .data-grid-wrap { flex: 1; overflow: auto; }
 .data-grid {
@@ -425,7 +422,76 @@ body {
 }
 .data-grid .btn-row-del:hover { color: var(--danger); }
 
-.data-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+.data-empty {
+  padding: 48px 24px; text-align: center; color: var(--muted); font-size: 13px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.data-empty-icon { color: var(--border); }
+.data-empty-icon svg { width: 40px; height: 40px; }
+.data-empty p { margin: 0; }
+
+/* ── Data view buttons ──────────────────────────────────────────────── */
+.dv-title { display: flex; align-items: center; gap: 6px; }
+.dv-title svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+.dv-count { font-size: 12px; color: var(--muted); }
+
+.dv-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; font-size: 12px;
+  background: none; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); cursor: pointer; transition: all .12s; white-space: nowrap;
+}
+.dv-btn:hover { background: var(--hover); }
+.dv-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+.dv-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.dv-btn-primary:hover { opacity: .85; background: var(--accent); }
+.dv-btn-empty-add { padding: 6px 16px; font-size: 13px; }
+
+.dv-col-pk {
+  font-size: 9px; background: var(--accent); color: #fff;
+  padding: 1px 4px; border-radius: 3px; vertical-align: middle; margin-left: 4px;
+}
+
+/* ── Create record form ─────────────────────────────────────────────── */
+.dv-create-form {
+  display: flex; flex-direction: column;
+  border-bottom: 2px solid var(--accent);
+  background: var(--sidebar); padding: 0; flex-shrink: 0;
+  animation: dvFormSlide .15s ease-out;
+}
+@keyframes dvFormSlide { from { max-height: 0; opacity: 0; } to { max-height: 400px; opacity: 1; } }
+
+.dv-form-header {
+  padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.dv-form-fields {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px;
+}
+.dv-form-field {
+  display: flex; flex-direction: column; gap: 3px;
+  min-width: 140px; flex: 1 1 160px; max-width: 280px;
+}
+.dv-form-field label {
+  font-size: 11px; font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 4px;
+}
+.dv-form-type { font-size: 10px; color: var(--muted); font-weight: 400; font-family: monospace; }
+.dv-form-field input {
+  padding: 5px 8px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--text); outline: none;
+  transition: border-color .12s;
+}
+.dv-form-field input:focus { border-color: var(--accent); }
+.dv-form-actions {
+  display: flex; gap: 6px; padding: 6px 14px 10px;
+}
+
+/* ── DB table icon in sidebar ───────────────────────────────────────── */
+.db-table-icon { display: flex; align-items: center; }
+.db-table-icon svg { width: 14px; height: 14px; color: var(--accent); }
 
 /* ── Resize handle ───────────────────────────────────────────────────── */
 #resize-handle {

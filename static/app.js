@@ -412,7 +412,7 @@ async function loadProjects() {
     li.dataset.name = p.name;
     li.innerHTML = `
       <span class="project-name">${p.icon || '📦'} ${p.name}</span>
-      <button class="btn-delete-project" title="Supprimer">🗑</button>`;
+      <button class="btn-delete-project" title="Supprimer"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><polyline points="3 4 4 12 10 12 11 4"/><line x1="2" y1="4" x2="12" y2="4"/><path d="M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4"/></svg></button>`;
     li.querySelector('.project-name').onclick = () => openProject(p.name);
     li.querySelector('.btn-delete-project').onclick = (ev) => {
       ev.stopPropagation();
@@ -793,9 +793,30 @@ async function selectProject(name) {
   openProject(name);
 }
 
-// ── VS Code-style file icons (SVG) ────────────────────────────────────
+// ── SVG icon helpers ──────────────────────────────────────────────────
 const _iconSvg = (paths, color) =>
   `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">${paths.map(d=>`<path d="${d}" fill="${color}"/>`).join('')}</svg>`;
+
+const _strokeIcon = (w, h, content) =>
+  `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">${content}</svg>`;
+
+// Reusable SVG icons for buttons
+const SVG_ICONS = {
+  table:    _strokeIcon(16, 16, '<rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="2" y1="10" x2="14" y2="10"/><line x1="6" y1="6" x2="6" y2="14"/><line x1="10" y1="6" x2="10" y2="14"/>'),
+  plus:     _strokeIcon(14, 14, '<line x1="7" y1="3" x2="7" y2="11"/><line x1="3" y1="7" x2="11" y2="7"/>'),
+  refresh:  _strokeIcon(14, 14, '<path d="M11.5 5A4.5 4.5 0 002.5 7"/><path d="M2.5 9a4.5 4.5 0 009-2"/><polyline points="11.5 2 11.5 5 8.5 5"/><polyline points="2.5 12 2.5 9 5.5 9"/>'),
+  trash:    _strokeIcon(14, 14, '<polyline points="3 4 4 12 10 12 11 4"/><line x1="2" y1="4" x2="12" y2="4"/><path d="M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4"/>'),
+  play:     _strokeIcon(14, 14, '<polygon points="4,2 12,7 4,12" fill="currentColor" stroke="none"/>'),
+  stop:     _strokeIcon(14, 14, '<rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" stroke="none"/>'),
+  clearLog: _strokeIcon(14, 14, '<line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/><rect x="1" y="1" width="12" height="12" rx="2"/>'),
+  logs:     _strokeIcon(14, 14, '<line x1="3" y1="4" x2="11" y2="4"/><line x1="3" y1="7" x2="9" y2="7"/><line x1="3" y1="10" x2="11" y2="10"/>'),
+  save:     _strokeIcon(14, 14, '<path d="M11 13H3a1 1 0 01-1-1V2a1 1 0 011-1h6l3 3v8a1 1 0 01-1 1z"/><polyline points="8 1 8 4 11 4"/><line x1="5" y1="8" x2="9" y2="8"/><line x1="5" y1="10" x2="9" y2="10"/>'),
+  edit:     _strokeIcon(14, 14, '<path d="M9.5 2.5l2 2L5 11H3V9l6.5-6.5z"/><line x1="8" y1="4" x2="10" y2="6"/>'),
+  clock:    _strokeIcon(14, 14, '<circle cx="7" cy="7" r="5.5"/><polyline points="7 4 7 7 9.5 8.5"/>'),
+  mail:     _strokeIcon(14, 14, '<rect x="1.5" y="3" width="11" height="8" rx="1.5"/><polyline points="1.5 3 7 7.5 12.5 3"/>'),
+  gear:     _strokeIcon(14, 14, '<circle cx="7" cy="7" r="2"/><path d="M7 1.5l.9 1.6a4 4 0 011.1.6l1.7-.5.8 1.4-1 1.3a4 4 0 010 1.2l1 1.3-.8 1.4-1.7-.5a4 4 0 01-1.1.6L7 12.5l-1-.1-.9-1.5a4 4 0 01-1.1-.6l-1.7.5-.8-1.4 1-1.3a4 4 0 010-1.2l-1-1.3.8-1.4 1.7.5a4 4 0 011.1-.6L7 1.5z"/>'),
+  close:    _strokeIcon(12, 12, '<line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/>'),
+};
 
 const FILE_ICONS = {
   // Web
@@ -1641,7 +1662,7 @@ async function loadDbSection() {
     const row = document.createElement('div');
     row.classList.add('db-table-item');
     row.innerHTML = `
-      <span>🗄</span>
+      <span class="db-table-icon">${SVG_ICONS.table}</span>
       <span class="db-table-name">${t.name}</span>
       <span class="db-table-count">${t.rows} lignes</span>`;
 
@@ -1722,6 +1743,11 @@ async function showDataTab(tab) {
 
   const data = await api('GET', `/api/projects/${currentProject}/data/${tab.tableName}?limit=200`);
 
+  // Get column metadata from schema
+  const schemaInfo = dbSchema || await api('GET', `/api/projects/${currentProject}/schema`);
+  const tableInfo = schemaInfo.tables.find(t => t.name === tab.tableName);
+  const columns = tableInfo ? tableInfo.columns : [];
+
   const view = document.createElement('div');
   view.classList.add('data-view');
 
@@ -1729,26 +1755,65 @@ async function showDataTab(tab) {
   const toolbar = document.createElement('div');
   toolbar.classList.add('data-view-toolbar');
   toolbar.innerHTML = `
-    <span>🗄 <strong>${tab.tableName}</strong></span>
-    <span>${data.total} ligne(s)</span>
+    <span class="dv-title">${SVG_ICONS.table} <strong>${tab.tableName}</strong></span>
+    <span class="dv-count">${data.total} ligne(s)</span>
     <div style="flex:1"></div>
-    <button id="dv-refresh">↺ Actualiser</button>`;
+    <button class="dv-btn dv-btn-primary" id="dv-add">${SVG_ICONS.plus} Nouveau</button>
+    <button class="dv-btn" id="dv-refresh">${SVG_ICONS.refresh} Actualiser</button>`;
   view.appendChild(toolbar);
+
+  // ── Create form (hidden by default) ──
+  const formWrap = document.createElement('div');
+  formWrap.classList.add('dv-create-form');
+  formWrap.style.display = 'none';
+
+  const editableCols = columns.filter(c => !c.pk || !['INTEGER'].includes(c.type.toUpperCase()));
+  // For auto-increment PK, skip it
+  const formCols = columns.filter(c => {
+    if (c.pk && c.type.toUpperCase() === 'INTEGER') return false; // autoincrement
+    return true;
+  });
+
+  let formHTML = '<div class="dv-form-header"><span>Nouvel enregistrement</span></div><div class="dv-form-fields">';
+  formCols.forEach(col => {
+    const required = col.notnull && !col.dflt_value ? ' *' : '';
+    const placeholder = col.dflt_value ? `défaut: ${col.dflt_value}` : col.type;
+    formHTML += `
+      <div class="dv-form-field">
+        <label>${col.name}${required} <span class="dv-form-type">${col.type}</span></label>
+        <input type="text" name="${col.name}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
+      </div>`;
+  });
+  formHTML += '</div><div class="dv-form-actions">';
+  formHTML += `<button class="dv-btn dv-btn-primary" id="dv-form-save">${SVG_ICONS.save} Enregistrer</button>`;
+  formHTML += `<button class="dv-btn" id="dv-form-cancel">${SVG_ICONS.close} Annuler</button>`;
+  formHTML += '</div>';
+  formWrap.innerHTML = formHTML;
+  view.appendChild(formWrap);
 
   // Grid
   const wrap = document.createElement('div');
   wrap.classList.add('data-grid-wrap');
 
+  const cols = data.rows.length ? Object.keys(data.rows[0]) : columns.map(c => c.name);
+
   if (!data.rows.length) {
-    wrap.innerHTML = '<div class="data-empty">Aucune donnée dans cette table.</div>';
+    wrap.innerHTML = `<div class="data-empty">
+      <div class="data-empty-icon">${SVG_ICONS.table}</div>
+      <p>Aucune donnée dans cette table.</p>
+      <button class="dv-btn dv-btn-primary dv-btn-empty-add">${SVG_ICONS.plus} Ajouter un enregistrement</button>
+    </div>`;
   } else {
-    const cols = Object.keys(data.rows[0]);
     const table = document.createElement('table');
     table.classList.add('data-grid');
 
     // Header
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '<th></th></tr>';
+    thead.innerHTML = '<tr>' + cols.map(c => {
+      const colInfo = columns.find(ci => ci.name === c);
+      const pk = colInfo && colInfo.pk ? ' <span class="dv-col-pk">PK</span>' : '';
+      return `<th>${c}${pk}</th>`;
+    }).join('') + '<th></th></tr>';
     table.appendChild(thead);
 
     // Rows
@@ -1756,7 +1821,7 @@ async function showDataTab(tab) {
     data.rows.forEach(row => {
       const tr = document.createElement('tr');
       tr.dataset.rowData = JSON.stringify(row);
-      cols.forEach(col => {
+      cols.forEach((col, i) => {
         const td = document.createElement('td');
         const val = row[col];
         if (val === null || val === undefined) {
@@ -1765,12 +1830,15 @@ async function showDataTab(tab) {
         } else {
           td.textContent = String(val);
         }
+        // First column = PK styling
+        const colInfo = columns.find(ci => ci.name === col);
+        if (colInfo && colInfo.pk) td.classList.add('pk-val');
         tr.appendChild(td);
       });
       // Actions cell
       const actionsTd = document.createElement('td');
       actionsTd.innerHTML = `<span class="row-actions">
-        <button class="btn-row-del" title="Supprimer">🗑</button>
+        <button class="btn-row-del" title="Supprimer">${SVG_ICONS.trash}</button>
       </span>`;
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
@@ -1783,11 +1851,18 @@ async function showDataTab(tab) {
       if (!btn) return;
       const tr = btn.closest('tr');
       const rowData = JSON.parse(tr.dataset.rowData);
-      // Find PK value (first column)
-      const pkVal = rowData[cols[0]];
-      await api('DELETE', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`);
-      tr.remove();
-      toast('Ligne supprimée', 'success');
+      const pkCol = columns.find(c => c.pk);
+      const pkName = pkCol ? pkCol.name : cols[0];
+      const pkVal = rowData[pkName];
+      try {
+        await api('DELETE', `/api/projects/${currentProject}/data/${tab.tableName}/${pkVal}`);
+        tr.remove();
+        toast('Ligne supprimée', 'success');
+        // Update count
+        const countEl = toolbar.querySelector('.dv-count');
+        const current = parseInt(countEl.textContent) || 0;
+        countEl.textContent = `${Math.max(0, current - 1)} ligne(s)`;
+      } catch(err) { toast(err.message, 'error'); }
     });
 
     wrap.appendChild(table);
@@ -1796,7 +1871,52 @@ async function showDataTab(tab) {
   view.appendChild(wrap);
   container.appendChild(view);
 
+  // ── Event handlers ──
+  const toggleForm = (show) => {
+    formWrap.style.display = show ? 'flex' : 'none';
+    if (show) {
+      formWrap.querySelectorAll('input').forEach(inp => inp.value = '');
+      const firstInput = formWrap.querySelector('input');
+      if (firstInput) setTimeout(() => firstInput.focus(), 50);
+    }
+  };
+
+  toolbar.querySelector('#dv-add').onclick = () => toggleForm(true);
   toolbar.querySelector('#dv-refresh').onclick = () => showDataTab(tab);
+  formWrap.querySelector('#dv-form-cancel').onclick = () => toggleForm(false);
+
+  // Empty state "Ajouter" button
+  const emptyAddBtn = wrap.querySelector('.dv-btn-empty-add');
+  if (emptyAddBtn) emptyAddBtn.onclick = () => toggleForm(true);
+
+  // Save new record
+  formWrap.querySelector('#dv-form-save').onclick = async () => {
+    const inputs = formWrap.querySelectorAll('.dv-form-fields input');
+    const record = {};
+    let hasValue = false;
+    inputs.forEach(inp => {
+      const val = inp.value.trim();
+      if (val !== '') {
+        // Try to parse numbers
+        const num = Number(val);
+        record[inp.name] = (val !== '' && !isNaN(num) && String(num) === val) ? num : val;
+        hasValue = true;
+      }
+    });
+    if (!hasValue) { toast('Remplis au moins un champ', 'error'); return; }
+    try {
+      await api('POST', `/api/projects/${currentProject}/data/${tab.tableName}`, record);
+      toast('Enregistrement créé', 'success');
+      toggleForm(false);
+      await showDataTab(tab); // Refresh the view
+    } catch(err) { toast(err.message || 'Erreur lors de la création', 'error'); }
+  };
+
+  // Enter key in form → save
+  formWrap.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); formWrap.querySelector('#dv-form-save').click(); }
+    if (e.key === 'Escape') { toggleForm(false); }
+  });
 }
 
 // ── Run ───────────────────────────────────────────────────────────────
