@@ -7,9 +7,12 @@ services:
       - "127.0.0.1:8000:8000"   # Accessible en local uniquement → nginx gère 80/443
     volumes:
       - ./data/projects:/data/projects
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker-outside-of-Docker for isolation
     environment:
       # Domaine principal de Le Mat (jamais routé vers un projet)
       - LEMAT_MAIN_DOMAIN=engine.irotoribaroka.com
       # URL publique de base pour les liens de déploiement
       - LEMAT_BASE_URL=https://engine.irotoribaroka.com
+      # Docker isolation (auto = use Docker if available)
+      - LEMAT_DOCKER_ISOLATION=auto
     restart: unless-stopped
