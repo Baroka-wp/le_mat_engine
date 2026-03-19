@@ -30,6 +30,9 @@ from pydantic import BaseModel
 import model_parser
 import db_engine
 import docker_runner
+import agent as _agent
+import agent_pipeline as _pipeline
+import agent_memory as _agent_mem
 import auth as _auth
 from auth import get_current_user, RegisterRequest, LoginRequest, TokenResponse
 
@@ -105,6 +108,9 @@ async def project_ownership_middleware(request: Request, call_next):
             # Laisser passer POST /api/projects/{name} (création)
             if request.method == "POST" and len(parts) == 4:
                 return await call_next(request)
+            # Laisser passer le SDK JS et les data/schema routes (accédées depuis les pages projet)
+            if path.endswith("/lemat-sdk.js") or "/data/" in path or "/schema/" in path:
+                return await call_next(request)
             project_dir = BASE_DIR / project_name
             if project_dir.exists():
                 meta_p = project_dir / "_meta.json"
@@ -127,12 +133,13 @@ _PUBLIC_API_PREFIXES = ("/api/auth/",)
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    # Routes publiques : auth, assets statiques, projets déployés (/p/), livereload WS
+    # Routes publiques : auth, assets statiques, projets déployés (/p/), livereload WS, SDK
     is_public = (
         any(path.startswith(p) for p in _PUBLIC_API_PREFIXES)
         or path.startswith("/p/")
         or path.startswith("/editor")
         or not path.startswith("/api/")
+        or path.endswith("/lemat-sdk.js")
     )
     if is_public:
         return await call_next(request)
@@ -151,7 +158,7 @@ async def auth_middleware(request: Request, call_next):
     # Appels internes du SDK (scripts exécutés par Le Mat lui-même depuis localhost)
     # → les routes data/, schema/, exec/, mail/ sont accessibles sans JWT depuis 127.0.0.1
     client_host = request.client.host if request.client else ""
-    _SDK_SEGMENTS = ("/data/", "/schema/", "/exec/", "/mail/", "/upload")
+    _SDK_SEGMENTS = ("/data/", "/schema/", "/exec/", "/mail/", "/upload", "/lemat-sdk.js")
     if client_host in ("127.0.0.1", "::1", "localhost") and any(seg in path for seg in _SDK_SEGMENTS):
         request.state.user_id = 1  # internal calls run as admin
         request.state.user_email = "internal"
@@ -232,29 +239,34 @@ NON_EXECUTABLE = {"html", "htm", "css", "svg", "json", "xml", "md", "txt", "lema
 
 # ── Inject script (live reload + SDK loader) ──────────────────────────────────
 
-INJECT_SCRIPT = """<script>
-(function(){{
+_INJECT_SCRIPT_SDK = '<script src="/api/projects/__PROJECT__/lemat-sdk.js"></script>'
+_INJECT_SCRIPT_LR = """<script>
+(function(){
   var proj = location.pathname.split('/')[2];
-  // Le Mat SDK
-  var sdk = document.createElement('script');
-  sdk.src = '/api/projects/' + proj + '/lemat-sdk.js';
-  document.head.appendChild(sdk);
-  // Live reload
-  function connect(){{
+  function connect(){
     var ws = new WebSocket('ws://' + location.host + '/api/projects/' + proj + '/livereload');
-    ws.onmessage = function(){{ location.reload(); }};
-    ws.onclose   = function(){{ setTimeout(connect, 1500); }};
-  }}
+    ws.onmessage = function(){ location.reload(); };
+    ws.onclose   = function(){ setTimeout(connect, 1500); };
+  }
   connect();
-}})();
+})();
 </script>"""
 
 
-def inject_scripts(html: str) -> str:
-    tag = INJECT_SCRIPT
+def inject_scripts(html: str, project: str = "") -> str:
+    # SDK tag (synchronous, in <head>) — needs project name
+    sdk_tag = _INJECT_SCRIPT_SDK.replace("__PROJECT__", project) if project else ""
+    # Live reload (in <body>)
+    lr_tag = _INJECT_SCRIPT_LR
+
+    # Inject SDK in <head> (before user scripts) and live reload before </body>
+    if sdk_tag and "</head>" in html:
+        html = html.replace("</head>", sdk_tag + "\n</head>", 1)
     if "</body>" in html:
-        return html.replace("</body>", tag + "</body>", 1)
-    return html + tag
+        html = html.replace("</body>", lr_tag + "</body>", 1)
+    else:
+        html = html + (sdk_tag if sdk_tag else "") + lr_tag
+    return html
 
 
 def inject_scripts_deployed(html: str, project: str) -> str:
@@ -320,7 +332,8 @@ HIDDEN_SUFFIXES = {
     ".db-shm", ".db-wal", ".DS_Store",
     "smtp.json", "crons.json", "cron_logs.json",
     "_lemat_init.py", "_lemat_init.js", "_lemat_api_init.js", "_meta.json",
-    "api_keys.json",
+    "api_keys.json", "_agent.json", "_agent_history.json",
+    "_agent_memory.json", "_agent_pipeline_state.json",
 }
 
 # ── API runner paths ──
@@ -1360,6 +1373,260 @@ def delete_api_key(project: str, key_id: str):
     return {"deleted": True}
 
 
+# ── AI Agent ──────────────────────────────────────────────────────────────────
+
+def _agent_config_path(project: str) -> Path:
+    return safe_path(project) / "_agent.json"
+
+def _agent_history_path(project: str) -> Path:
+    return safe_path(project) / "_agent_history.json"
+
+def _load_agent_config(project: str) -> Optional[dict]:
+    path = _agent_config_path(project)
+    if path.exists():
+        return json.loads(path.read_text("utf-8"))
+    return None
+
+def _save_agent_config(project: str, config: dict):
+    _agent_config_path(project).write_text(json.dumps(config, indent=2))
+
+def _load_agent_history(project: str) -> list:
+    path = _agent_history_path(project)
+    if path.exists():
+        try:
+            return json.loads(path.read_text("utf-8"))
+        except Exception:
+            return []
+    return []
+
+def _save_agent_history(project: str, history: list):
+    # Cap at 50 messages
+    if len(history) > 50:
+        history = history[-50:]
+    _agent_history_path(project).write_text(json.dumps(history, indent=2))
+
+
+@app.get("/api/projects/{project}/agent")
+def get_agent_config(project: str):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    config = _load_agent_config(project)
+    if not config:
+        return {"configured": False}
+    # Mask API key
+    masked = dict(config)
+    if masked.get("api_key"):
+        key = masked["api_key"]
+        masked["api_key"] = "****" + key[-4:] if len(key) > 4 else "****"
+    masked["configured"] = True
+    return masked
+
+
+@app.put("/api/projects/{project}/agent")
+def save_agent_config(project: str, body: dict):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    existing = _load_agent_config(project) or {}
+    config = {
+        "provider": body.get("provider", "claude"),
+        "api_key": body.get("api_key", ""),
+        "model": body.get("model", ""),
+        "project_description": body.get("project_description", ""),
+        "max_tokens": body.get("max_tokens", 4096),
+    }
+    # If API key is masked, keep the existing one
+    if config["api_key"].startswith("****") and existing.get("api_key"):
+        config["api_key"] = existing["api_key"]
+    _save_agent_config(project, config)
+    # Return masked
+    masked = dict(config)
+    if masked.get("api_key"):
+        key = masked["api_key"]
+        masked["api_key"] = "****" + key[-4:] if len(key) > 4 else "****"
+    masked["configured"] = True
+    return masked
+
+
+@app.delete("/api/projects/{project}/agent")
+def delete_agent_config(project: str):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    path = _agent_config_path(project)
+    if path.exists():
+        path.unlink()
+    return {"deleted": True}
+
+
+@app.get("/api/projects/{project}/agent/history")
+def get_agent_history(project: str):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    return _load_agent_history(project)
+
+
+@app.delete("/api/projects/{project}/agent/history")
+def clear_agent_history(project: str):
+    if not safe_path(project).exists():
+        raise HTTPException(404, "Project not found")
+    path = _agent_history_path(project)
+    if path.exists():
+        path.unlink()
+    return {"cleared": True}
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    history: Optional[list] = None
+
+
+@app.post("/api/projects/{project}/agent/chat")
+async def agent_chat(project: str, body: AgentChatRequest):
+    project_dir = safe_path(project)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    config = _load_agent_config(project)
+    if not config or not config.get("api_key"):
+        raise HTTPException(400, "Agent not configured. Add an API key first.")
+
+    # Build message history — filter to simple user/assistant text messages only
+    raw_history = body.history if body.history else _load_agent_history(project)
+    history = []
+    for m in raw_history:
+        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str):
+            history.append({"role": m["role"], "content": m["content"]})
+    history.append({"role": "user", "content": body.message})
+
+    # Get all schema info
+    schema_parts = []
+    for f in project_dir.iterdir():
+        if f.suffix == ".lemat" and f.is_file():
+            schema_parts.append(f"**{f.name}**\n```lemat\n{f.read_text('utf-8')}\n```")
+    schema_info = "\n\n".join(schema_parts)
+
+    async def event_stream():
+        assistant_text = ""
+        tool_actions = []
+        files_changed = False
+
+        async for chunk in _pipeline.stream_pipeline(
+            config=config,
+            messages=history,
+            project_name=project,
+            project_dir=project_dir,
+            schema_info=schema_info,
+        ):
+            yield chunk
+
+            # Parse chunk to track assistant text and file changes
+            try:
+                if chunk.startswith("data: "):
+                    data = json.loads(chunk[6:].strip())
+                    if data.get("type") == "text":
+                        assistant_text += data.get("data", "")
+                    elif data.get("type") == "tool_result":
+                        result = data.get("result", {})
+                        if result.get("success") and data.get("name") in ("create_file", "edit_file", "delete_file", "create_folder"):
+                            files_changed = True
+                            tool_actions.append({"tool": data["name"], "result": result})
+                    elif data.get("type") == "done":
+                        # Save to history
+                        if assistant_text:
+                            history.append({"role": "assistant", "content": assistant_text})
+                        _save_agent_history(project, history)
+                        # Notify WebSocket clients to reload tree
+                        if files_changed:
+                            await _broadcast_reload(project)
+            except Exception:
+                pass
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+class AgentClarifyRequest(BaseModel):
+    answers: dict
+
+
+@app.post("/api/projects/{project}/agent/clarify")
+async def agent_clarify(project: str, body: AgentClarifyRequest):
+    """Resume pipeline after user answers clarification questions."""
+    project_dir = safe_path(project)
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    config = _load_agent_config(project)
+    if not config or not config.get("api_key"):
+        raise HTTPException(400, "Agent not configured.")
+
+    # Load pipeline state
+    state = _pipeline.load_pipeline_state(project_dir)
+    if not state or state.get("phase") != "clarify":
+        raise HTTPException(400, "No pending clarification.")
+
+    # Rebuild message history from the original message
+    raw_history = _load_agent_history(project)
+    history = []
+    for m in raw_history:
+        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str):
+            history.append({"role": m["role"], "content": m["content"]})
+    # Add original message back
+    original_msg = state.get("original_message", "")
+    if original_msg:
+        history.append({"role": "user", "content": original_msg})
+
+    # Get schema info
+    schema_parts = []
+    for f in project_dir.iterdir():
+        if f.suffix == ".lemat" and f.is_file():
+            schema_parts.append(f"**{f.name}**\n```lemat\n{f.read_text('utf-8')}\n```")
+    schema_info = "\n\n".join(schema_parts)
+
+    async def event_stream():
+        assistant_text = ""
+        files_changed = False
+
+        async for chunk in _pipeline.stream_pipeline(
+            config=config,
+            messages=history,
+            project_name=project,
+            project_dir=project_dir,
+            schema_info=schema_info,
+            clarification_response=body.answers,
+        ):
+            yield chunk
+
+            try:
+                if chunk.startswith("data: "):
+                    data = json.loads(chunk[6:].strip())
+                    if data.get("type") == "text":
+                        assistant_text += data.get("data", "")
+                    elif data.get("type") == "tool_result":
+                        result = data.get("result", {})
+                        if result.get("success") and data.get("name") in ("create_file", "edit_file", "delete_file", "create_folder"):
+                            files_changed = True
+                    elif data.get("type") == "done":
+                        if assistant_text:
+                            history.append({"role": "assistant", "content": assistant_text})
+                        _save_agent_history(project, history)
+                        if files_changed:
+                            await _broadcast_reload(project)
+            except Exception:
+                pass
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def _broadcast_reload(project: str):
+    """Notify connected WebSocket clients that the file tree changed."""
+    # Use the existing WebSocket broadcast if available
+    if hasattr(app.state, 'ws_clients'):
+        for ws in list(getattr(app.state, 'ws_clients', {}).get(project, [])):
+            try:
+                await ws.send_json({"type": "reload"})
+            except Exception:
+                pass
+
+
 # ── User-Defined API Route Handler ────────────────────────────────────────────
 
 def _list_api_files(project_dir: Path) -> list:
@@ -2290,10 +2557,10 @@ async def serve_project_file(project: str, filepath: str):
     if path.is_dir():
         index = path / "index.html"
         if index.exists():
-            return HTMLResponse(inject_scripts(index.read_text(errors="replace")))
+            return HTMLResponse(inject_scripts(index.read_text(errors="replace"), project))
         raise HTTPException(404, "No index.html found")
     if path.suffix.lower() in (".html", ".htm"):
-        return HTMLResponse(inject_scripts(path.read_text(errors="replace")))
+        return HTMLResponse(inject_scripts(path.read_text(errors="replace"), project))
     return FileResponse(path)
 
 
@@ -2301,7 +2568,7 @@ async def serve_project_file(project: str, filepath: str):
 async def serve_project_index(project: str):
     index = safe_path(project, "index.html")
     if index.exists():
-        return HTMLResponse(inject_scripts(index.read_text(errors="replace")))
+        return HTMLResponse(inject_scripts(index.read_text(errors="replace"), project))
     raise HTTPException(404, "No index.html found in project")
 
 

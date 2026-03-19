@@ -98,6 +98,8 @@ let tabs           = [];
 let activeTab      = null;
 let currentRunId   = null;
 let currentES      = null;
+let agentHistory   = [];
+let agentStreaming  = false;
 
 // Types de fichiers qui s'ouvrent dans le navigateur (pas exécutés)
 const WEB_EXTS = new Set(['html', 'htm', 'css', 'svg']);
@@ -170,9 +172,12 @@ async function bootApp() {
   document.getElementById('btn-clear-term').onclick = () => clearTerminal();
   document.getElementById('btn-toggle-term').onclick = () => {
     const panel = document.getElementById('terminal-panel');
-    panel.classList.toggle('collapsed');
-    document.getElementById('btn-toggle-term').textContent =
-      panel.classList.contains('collapsed') ? '⬆ Logs' : '⬇ Logs';
+    if (panel.classList.contains('collapsed')) {
+      panel.classList.remove('collapsed');
+      switchBottomTab('logs');
+    } else {
+      panel.classList.add('collapsed');
+    }
   };
   document.getElementById('btn-sync-db').onclick = () => syncSchema();
 }
@@ -334,12 +339,14 @@ document.getElementById('edit-proj-name').addEventListener('keydown', e => {
 
 function openProject(name) {
   currentProject = name;
+  _selectedDir = '';
   showEditor();
   document.getElementById('current-project-name').textContent = name;
   document.getElementById('filetree-section').style.display = 'flex';
   document.getElementById('email-section').style.display = 'flex';
   document.getElementById('apikeys-section').style.display = 'flex';
-  Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection(), loadApiKeys()]);
+  document.getElementById('agent-section').style.display = 'flex';
+  Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection(), loadApiKeys(), loadAgentSection()]);
   document.querySelectorAll('#project-list li').forEach(li =>
     li.classList.toggle('active', li.dataset.name === name));
 }
@@ -884,6 +891,7 @@ function getFileIcon(name) {
 // ── File tree ─────────────────────────────────────────────────────────
 let _openDirs = new Set(); // Remember open directories across reloads
 let _draggedPath = null;
+let _selectedDir = '';       // Currently selected folder for new file/folder creation
 
 async function loadTree() {
   const tree = await api('GET', `/api/projects/${currentProject}/tree`);
@@ -1014,6 +1022,10 @@ function renderTree(children, container, prefix) {
         childWrap.style.display = nowOpen ? 'none' : 'block';
         div.querySelector('.tree-chevron-wrap').classList.toggle('open', !nowOpen);
         div.querySelector('.tree-icon').innerHTML = !nowOpen ? _folderOpenIcon : _folderIcon;
+        // Track selected folder for new file/folder creation
+        _selectedDir = path;
+        document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('dir-selected'));
+        div.classList.add('dir-selected');
       };
 
       renderTree(node.children, childWrap, path);
@@ -1022,6 +1034,9 @@ function renderTree(children, container, prefix) {
     } else {
       div.onclick = (e) => {
         if (e.target.closest('.ctx-trigger')) return;
+        // Track parent folder as selected dir
+        _selectedDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+        document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('dir-selected'));
         openFile(path);
       };
       container.appendChild(div);
@@ -1139,22 +1154,32 @@ function ctxDelete(path, isDir) {
 
 // ── New file / folder (header buttons) ─────────────────────────────────
 document.getElementById('btn-new-file').onclick = () => {
-  prompt_('Nom du fichier (ex: index.html, src/app.js)', '', async (name) => {
+  const prefix = _selectedDir ? `${_selectedDir}/` : '';
+  const placeholder = _selectedDir
+    ? `Fichier dans ${_selectedDir}/ (ex: index.html)`
+    : 'Nom du fichier (ex: index.html, src/app.js)';
+  prompt_(placeholder, '', async (name) => {
     if (!name) return;
-    await api('PUT', `/api/projects/${currentProject}/files/${name}`, { content: '' });
+    const fullPath = prefix + name;
+    await api('PUT', `/api/projects/${currentProject}/files/${fullPath}`, { content: '' });
     // Auto-open parent dirs
-    const parts = name.split('/');
+    const parts = fullPath.split('/');
     for (let i = 1; i < parts.length; i++) _openDirs.add(parts.slice(0, i).join('/'));
     await loadTree();
-    openFile(name);
+    openFile(fullPath);
   });
 };
 
 document.getElementById('btn-new-folder').onclick = () => {
-  prompt_('Nom du dossier (ex: src, components/ui)', '', async (name) => {
+  const prefix = _selectedDir ? `${_selectedDir}/` : '';
+  const placeholder = _selectedDir
+    ? `Dossier dans ${_selectedDir}/ (ex: components)`
+    : 'Nom du dossier (ex: src, components/ui)';
+  prompt_(placeholder, '', async (name) => {
     if (!name) return;
-    await api('POST', `/api/projects/${currentProject}/mkdir/${name}`);
-    const parts = name.split('/');
+    const fullPath = prefix + name;
+    await api('POST', `/api/projects/${currentProject}/mkdir/${fullPath}`);
+    const parts = fullPath.split('/');
     for (let i = 1; i <= parts.length; i++) _openDirs.add(parts.slice(0, i).join('/'));
     await loadTree();
     toast(`Dossier créé`, 'success');
@@ -1170,7 +1195,7 @@ document.getElementById('upload-input').onchange = async (e) => {
   if (!files.length) return;
   const fd = new FormData();
   Array.from(files).forEach(f => fd.append('files', f));
-  fd.append('folder', '');
+  fd.append('folder', _selectedDir);
   const res = await fetch(`/api/projects/${currentProject}/upload`, { method: 'POST', body: fd });
   if (!res.ok) { toast('Erreur upload', 'error'); return; }
   const data = await res.json();
@@ -1201,6 +1226,44 @@ async function openFile(path) {
   renderTabs();
   showTab(tab);
   highlightTreeItem(path);
+}
+
+/**
+ * Reload a file's content in its tab if already open, or open it fresh.
+ * Called by the agent after create_file / edit_file so the user sees changes live.
+ */
+async function reloadOrOpenFile(path) {
+  const existingTab = tabs.find(t => t.path === path);
+  if (existingTab) {
+    try {
+      const data = await api('GET', `/api/projects/${currentProject}/files/${path}`);
+      if (existingTab.model && existingTab.model.setValue) {
+        // Monaco model: update content without triggering "modified" flag
+        const currentValue = existingTab.model.getValue();
+        if (currentValue !== data.content) {
+          existingTab.model.pushEditOperations(
+            [],
+            [{
+              range: existingTab.model.getFullModelRange(),
+              text: data.content,
+            }],
+            () => null
+          );
+        }
+        existingTab.modified = false;
+      } else if (existingTab.type === 'lemat') {
+        existingTab.content = data.content;
+      }
+      // Switch to this tab
+      activeTab = existingTab;
+      renderTabs();
+      showTab(existingTab);
+    } catch (e) {
+      console.error('reloadOrOpenFile failed:', e);
+    }
+  } else {
+    await openFile(path);
+  }
 }
 
 function showTab(tab) {
@@ -2417,6 +2480,7 @@ function clearTerminal() {
 
 function expandLogs() {
   document.getElementById('terminal-panel').classList.remove('collapsed');
+  switchBottomTab('logs');
 }
 
 // ── Resize handle ─────────────────────────────────────────────────────
@@ -2863,3 +2927,821 @@ document.getElementById('btn-new-apikey').onclick = async () => {
   });
 };
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Agent IA
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function loadAgentSection() {
+  if (!currentProject) return;
+  const statusEl = document.getElementById('agent-status');
+  try {
+    const config = await api('GET', `/api/projects/${currentProject}/agent`);
+    if (config.configured) {
+      statusEl.textContent = `${config.provider === 'claude' ? 'Claude' : config.provider === 'openai' ? 'OpenAI' : 'Grok'} — Prêt`;
+      statusEl.classList.add('active');
+    } else {
+      statusEl.textContent = 'Non configuré';
+      statusEl.classList.remove('active');
+    }
+  } catch {
+    statusEl.textContent = 'Non configuré';
+    statusEl.classList.remove('active');
+  }
+}
+
+// ── Config modal ─────────────────────────────────────────────────────────
+const PROVIDER_MODELS = {
+  claude: [
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4 (recommandé)' },
+    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+    { value: 'claude-haiku-4-20250514', label: 'Claude Haiku 4 (rapide)' },
+  ],
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4o (recommandé)' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (rapide)' },
+    { value: 'o3-mini', label: 'o3-mini (raisonnement)' },
+  ],
+  xai: [
+    { value: 'grok-3', label: 'Grok 3 (recommandé)' },
+    { value: 'grok-3-mini', label: 'Grok 3 Mini (rapide)' },
+  ],
+};
+
+function populateModelSelect(provider, currentModel) {
+  const select = document.getElementById('agent-model');
+  const models = PROVIDER_MODELS[provider] || [];
+  select.innerHTML = models.map(m =>
+    `<option value="${m.value}"${m.value === currentModel ? ' selected' : ''}>${m.label}</option>`
+  ).join('');
+}
+
+document.getElementById('btn-agent-config').onclick = async () => {
+  const backdrop = document.getElementById('agent-backdrop');
+  backdrop.classList.remove('hidden');
+  // Load existing config
+  try {
+    const config = await api('GET', `/api/projects/${currentProject}/agent`);
+    if (config.configured) {
+      const provider = config.provider || 'claude';
+      document.getElementById('agent-provider').value = provider;
+      document.getElementById('agent-api-key').value = config.api_key || '';
+      populateModelSelect(provider, config.model || '');
+      document.getElementById('agent-project-desc').value = config.project_description || '';
+    } else {
+      document.getElementById('agent-provider').value = 'claude';
+      document.getElementById('agent-api-key').value = '';
+      populateModelSelect('claude', '');
+      document.getElementById('agent-project-desc').value = '';
+    }
+  } catch {}
+};
+
+// Repopulate model select when provider changes
+document.getElementById('agent-provider').onchange = (e) => {
+  populateModelSelect(e.target.value, '');
+};
+
+document.getElementById('btn-agent-modal-close').onclick =
+document.getElementById('btn-agent-modal-cancel').onclick = () => {
+  document.getElementById('agent-backdrop').classList.add('hidden');
+};
+document.getElementById('agent-backdrop').onclick = (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+};
+
+document.getElementById('btn-agent-modal-save').onclick = async () => {
+  const provider = document.getElementById('agent-provider').value;
+  const apiKey = document.getElementById('agent-api-key').value.trim();
+  const model = document.getElementById('agent-model').value.trim();
+  const desc = document.getElementById('agent-project-desc').value.trim();
+
+  if (!apiKey) {
+    toast('Clé API requise', 'error');
+    return;
+  }
+
+  try {
+    await api('PUT', `/api/projects/${currentProject}/agent`, {
+      provider,
+      api_key: apiKey,
+      model: model || '',
+      project_description: desc,
+    });
+    document.getElementById('agent-backdrop').classList.add('hidden');
+    toast('Agent configuré !', 'success');
+    loadAgentSection();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+};
+
+// ── Toggle agent panel ───────────────────────────────────────────────────
+// ── Bottom panel tab switching ────────────────────────────────────────────
+document.getElementById('btn-agent-toggle').onclick = () => switchBottomTab('agent');
+
+document.querySelectorAll('.bottom-tab').forEach(tab => {
+  tab.addEventListener('click', () => switchBottomTab(tab.dataset.tab));
+});
+
+function switchBottomTab(tabName) {
+  // Expand panel if collapsed
+  const panel = document.getElementById('terminal-panel');
+  panel.classList.remove('collapsed');
+
+  // Switch tab active state
+  document.querySelectorAll('.bottom-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+
+  // Switch content
+  document.getElementById('terminal-output').classList.toggle('active', tabName === 'logs');
+  document.getElementById('agent-content').classList.toggle('active', tabName === 'agent');
+
+  // Show/hide agent controls
+  document.getElementById('agent-controls').style.display = tabName === 'agent' ? 'flex' : 'none';
+  document.getElementById('term-status').style.display = tabName === 'logs' ? '' : 'none';
+
+  // Hide dot indicator when switching to agent
+  if (tabName === 'agent') {
+    document.getElementById('agent-tab-dot').style.display = 'none';
+    document.getElementById('agent-input').focus();
+    loadAgentHistory();
+  }
+}
+
+// ── Chat history ─────────────────────────────────────────────────────────
+async function loadAgentHistory() {
+  if (!currentProject) return;
+  try {
+    agentHistory = await api('GET', `/api/projects/${currentProject}/agent/history`);
+    renderAgentHistory();
+  } catch {
+    agentHistory = [];
+  }
+}
+
+function renderAgentHistory() {
+  const container = document.getElementById('agent-messages');
+  container.innerHTML = '';
+  for (const msg of agentHistory) {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      appendAgentMessage(msg.role, msg.content);
+    }
+  }
+  scrollAgentToBottom();
+}
+
+document.getElementById('btn-agent-new').onclick = async () => {
+  if (!currentProject) return;
+  try {
+    await api('DELETE', `/api/projects/${currentProject}/agent/history`);
+  } catch {}
+  agentHistory = [];
+  document.getElementById('agent-messages').innerHTML = '';
+};
+
+// ── Send message ─────────────────────────────────────────────────────────
+document.getElementById('btn-agent-send').onclick = () => sendAgentMessage();
+document.getElementById('agent-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendAgentMessage();
+  }
+});
+
+async function sendAgentMessage() {
+  if (agentStreaming) return;
+  // Auto-switch to agent tab
+  switchBottomTab('agent');
+  const input = document.getElementById('agent-input');
+  const message = input.value.trim();
+  if (!message || !currentProject) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  // Show user message
+  appendAgentMessage('user', message);
+
+  // Show working animation
+  const workingEl = showAgentWorking();
+
+  // Disable input
+  agentStreaming = true;
+  document.getElementById('btn-agent-send').disabled = true;
+
+  try {
+    const resp = await fetch(`/api/projects/${currentProject}/agent/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify({
+        message,
+        history: agentHistory,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Erreur serveur' }));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+
+    // Process SSE stream (keep working indicator until first text/tool event)
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let assistantEl = null;
+    let assistantText = '';
+    let buffer = '';
+    let workingRemoved = false;
+    function removeWorking() {
+      if (!workingRemoved) { workingEl.remove(); workingRemoved = true; }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+        switch (data.type) {
+          case 'text':
+            removeWorking();
+            if (!assistantEl) {
+              assistantEl = appendAgentMessage('assistant', '');
+            }
+            assistantText += data.data;
+            updateAgentMessageContent(assistantEl, assistantText);
+            scrollAgentToBottom();
+            break;
+
+          case 'tool_start':
+            removeWorking();
+            appendAgentToolIndicator(data.name, 'pending', `${toolLabel(data.name)}...`);
+            scrollAgentToBottom();
+            break;
+
+          case 'tool_call':
+            // Tool call details (path info)
+            const path = data.args?.path;
+            if (path) {
+              updateLastToolIndicator(`${toolLabel(data.name)} → ${path}`);
+            }
+            break;
+
+          case 'tool_result':
+            const success = data.result?.success;
+            const resultPath = data.result?.path || '';
+            let toolMsg = `${toolLabel(data.name)} → ${resultPath} ${success ? '✓' : '✗'}`;
+            if (!success && data.result?.error) {
+              toolMsg += ` (${data.result.error.slice(0, 80)})`;
+            }
+            updateLastToolIndicator(toolMsg, success ? 'success' : 'error');
+
+            // Show diff if available
+            if (data.result?.diff) {
+              appendAgentDiff(resultPath, data.result.diff);
+            }
+
+            // Refresh file tree + reload/open modified file in editor
+            if (success && ['create_file', 'edit_file', 'delete_file', 'create_folder'].includes(data.name)) {
+              loadTree();
+              if (resultPath && data.name !== 'delete_file' && data.name !== 'create_folder') {
+                reloadOrOpenFile(resultPath);
+              }
+            }
+
+            // Search results
+            if (data.name === 'search_in_files' && data.result?.matches) {
+              appendAgentSearchResults(data.result.matches);
+            }
+
+            scrollAgentToBottom();
+            break;
+
+          case 'phase':
+            removeWorking();
+            if (data.status === 'start') {
+              appendAgentPhaseIndicator(data.phase);
+            }
+            scrollAgentToBottom();
+            break;
+
+          case 'plan':
+            removeWorking();
+            if (data.plan) {
+              appendAgentPlan(data.plan);
+            }
+            scrollAgentToBottom();
+            break;
+
+          case 'clarify':
+            removeWorking();
+            if (data.questions && data.questions.length > 0) {
+              appendAgentClarification(data.questions);
+            }
+            scrollAgentToBottom();
+            break;
+
+          case 'step_start':
+            removeWorking();
+            appendAgentToolIndicator(data.action, 'pending', `${toolLabel(data.action)} → ${data.path || '...'}`);
+            scrollAgentToBottom();
+            break;
+
+          case 'step_done':
+            updateLastToolIndicator(
+              `${toolLabel(data.action)} ${data.success ? '✓' : '✗'}`,
+              data.success ? 'success' : 'error'
+            );
+            scrollAgentToBottom();
+            break;
+
+          case 'verify':
+            removeWorking();
+            appendAgentVerify(data);
+            scrollAgentToBottom();
+            break;
+
+          case 'memory_update':
+            // Subtle indicator
+            if (data.status === 'rebuilding') {
+              appendAgentSystemNote('Analyse du projet...');
+            }
+            break;
+
+          case 'error':
+            removeWorking();
+            appendAgentMessage('assistant', `⚠️ ${data.data}`);
+            scrollAgentToBottom();
+            break;
+
+          case 'done':
+            removeWorking();
+            // Update local history
+            agentHistory.push({ role: 'user', content: message });
+            if (assistantText) {
+              agentHistory.push({ role: 'assistant', content: assistantText });
+            }
+            break;
+        }
+      }
+    }
+  } catch (e) {
+    removeWorking();
+    appendAgentMessage('assistant', `⚠️ Erreur: ${e.message}`);
+  } finally {
+    removeWorking(); // safety net
+    agentStreaming = false;
+    document.getElementById('btn-agent-send').disabled = false;
+    document.getElementById('agent-input').focus();
+  }
+}
+
+// ── DOM helpers ──────────────────────────────────────────────────────────
+function appendAgentMessage(role, content) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = `agent-msg ${role}`;
+
+  const label = document.createElement('div');
+  label.className = 'agent-msg-label';
+  label.textContent = role === 'user' ? 'Vous' : 'Agent';
+
+  const body = document.createElement('div');
+  body.className = 'agent-msg-content';
+  body.innerHTML = formatAgentText(content);
+
+  div.appendChild(label);
+  div.appendChild(body);
+  container.appendChild(div);
+  scrollAgentToBottom();
+  return div;
+}
+
+function updateAgentMessageContent(el, text) {
+  const body = el.querySelector('.agent-msg-content');
+  if (body) body.innerHTML = formatAgentText(text);
+}
+
+function formatAgentText(text) {
+  if (!text) return '';
+  // Simple markdown: code blocks, inline code, bold, newlines
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Code blocks: ```lang\n...\n```
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code>${code.trim()}</code></pre>`;
+  });
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Newlines (outside pre)
+  html = html.replace(/\n/g, '<br>');
+  // Fix <br> inside pre
+  html = html.replace(/<pre>([\s\S]*?)<\/pre>/g, (match) => {
+    return match.replace(/<br>/g, '\n');
+  });
+
+  return html;
+}
+
+function showAgentWorking() {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-working';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  container.appendChild(div);
+  scrollAgentToBottom();
+  return div;
+}
+
+function appendAgentToolIndicator(toolName, status, label) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = `agent-tool-indicator ${status}`;
+  div.dataset.tool = toolName;
+
+  const icon = status === 'pending' ? '⏳' : status === 'success' ? '✅' : '❌';
+  div.innerHTML = `<span class="tool-icon">${icon}</span><span class="tool-label">${label}</span>`;
+  container.appendChild(div);
+  return div;
+}
+
+function updateLastToolIndicator(label, status) {
+  const indicators = document.querySelectorAll('.agent-tool-indicator');
+  const last = indicators[indicators.length - 1];
+  if (!last) return;
+  if (status) {
+    last.className = `agent-tool-indicator ${status}`;
+    const icon = status === 'success' ? '✅' : '❌';
+    last.querySelector('.tool-icon').textContent = icon;
+  }
+  if (label) {
+    last.querySelector('.tool-label').textContent = label;
+  }
+}
+
+function toolLabel(name) {
+  const labels = {
+    create_file: 'Création fichier',
+    edit_file: 'Modification',
+    delete_file: 'Suppression',
+    create_folder: 'Création dossier',
+    read_file: 'Lecture fichier',
+    list_files: 'Liste fichiers',
+    search_in_files: 'Recherche',
+  };
+  return labels[name] || name;
+}
+
+function scrollAgentToBottom() {
+  const container = document.getElementById('agent-messages');
+  requestAnimationFrame(() => {
+    container.scrollTop = container.scrollHeight;
+  });
+}
+
+// ── Pipeline UI helpers ──────────────────────────────────────────────────
+
+const PHASE_LABELS = {
+  understand: 'Analyse',
+  clarify: 'Clarification',
+  plan: 'Planification',
+  execute: 'Exécution',
+  verify: 'Vérification',
+};
+
+function appendAgentPhaseIndicator(phase) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-phase';
+  div.dataset.phase = phase;
+  const label = PHASE_LABELS[phase] || phase;
+  div.innerHTML = `<span class="phase-dot"></span><span class="phase-label">${label}</span>`;
+  container.appendChild(div);
+}
+
+function appendAgentPlan(plan) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-plan';
+
+  let html = '';
+  if (plan.summary) {
+    html += `<div class="plan-summary">${escHtml(plan.summary)}</div>`;
+  }
+  if (plan.steps && plan.steps.length) {
+    html += '<div class="plan-steps">';
+    for (const step of plan.steps) {
+      const icon = step.needs_llm ? '🤖' : '⚙️';
+      html += `<div class="plan-step">
+        <span class="plan-step-num">${step.id || ''}</span>
+        <span class="plan-step-icon">${icon}</span>
+        <span class="plan-step-desc">${escHtml(step.description || '')}</span>
+        ${step.path ? `<span class="plan-step-path">${escHtml(step.path)}</span>` : ''}
+      </div>`;
+    }
+    html += '</div>';
+  }
+  div.innerHTML = html;
+  container.appendChild(div);
+}
+
+function appendAgentClarification(questions) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-clarify';
+
+  let html = '<div class="clarify-title">Quelques précisions...</div>';
+  const answers = {};
+
+  for (const q of questions) {
+    html += `<div class="clarify-question" data-qid="${q.id}">
+      <div class="clarify-text">${escHtml(q.text)}</div>`;
+
+    if (q.choices && q.choices.length) {
+      html += '<div class="clarify-choices">';
+      for (const choice of q.choices) {
+        html += `<button class="clarify-choice" data-qid="${q.id}" data-value="${escHtml(choice)}">${escHtml(choice)}</button>`;
+      }
+      html += '</div>';
+    }
+
+    if (q.allow_free_text) {
+      const ph = q.placeholder || 'Votre réponse...';
+      html += `<input class="clarify-input" data-qid="${q.id}" type="text" placeholder="${escHtml(ph)}">`;
+    }
+
+    html += '</div>';
+  }
+
+  html += '<button class="clarify-submit">Continuer</button>';
+  div.innerHTML = html;
+
+  // Wire up choice buttons
+  div.querySelectorAll('.clarify-choice').forEach(btn => {
+    btn.onclick = () => {
+      const qid = btn.dataset.qid;
+      // Deselect siblings
+      btn.closest('.clarify-choices').querySelectorAll('.clarify-choice').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      answers[qid] = btn.dataset.value;
+    };
+  });
+
+  // Wire up free text
+  div.querySelectorAll('.clarify-input').forEach(input => {
+    input.oninput = () => {
+      answers[input.dataset.qid] = input.value;
+    };
+  });
+
+  // Submit
+  div.querySelector('.clarify-submit').onclick = async () => {
+    // Collect answers from choices + free text
+    div.querySelectorAll('.clarify-input').forEach(input => {
+      if (input.value.trim()) answers[input.dataset.qid] = input.value.trim();
+    });
+
+    // Disable UI
+    div.querySelectorAll('button, input').forEach(el => el.disabled = true);
+    div.querySelector('.clarify-submit').textContent = 'Envoyé ✓';
+
+    // Show working
+    const workingEl = showAgentWorking();
+
+    // Send clarification response
+    try {
+      const resp = await fetch(`/api/projects/${currentProject}/agent/clarify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`,
+        },
+        body: JSON.stringify({ answers }),
+      });
+
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      // Process SSE stream from resumed pipeline
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantEl = null;
+      let assistantText = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+          // Re-use the same handlers
+          switch (data.type) {
+            case 'text':
+              workingEl.remove();
+              if (!assistantEl) assistantEl = appendAgentMessage('assistant', '');
+              assistantText += data.data;
+              updateAgentMessageContent(assistantEl, assistantText);
+              scrollAgentToBottom();
+              break;
+            case 'tool_start':
+              workingEl.remove();
+              appendAgentToolIndicator(data.name, 'pending', `${toolLabel(data.name)}...`);
+              break;
+            case 'tool_result':
+              const success = data.result?.success;
+              const rp = data.result?.path || '';
+              updateLastToolIndicator(`${toolLabel(data.name)} → ${rp} ${success ? '✓' : '✗'}`, success ? 'success' : 'error');
+              if (data.result?.diff) appendAgentDiff(rp, data.result.diff);
+              if (success && ['create_file','edit_file','delete_file','create_folder'].includes(data.name)) {
+                loadTree();
+                if (rp && data.name !== 'delete_file' && data.name !== 'create_folder') reloadOrOpenFile(rp);
+              }
+              break;
+            case 'phase':
+              if (data.status === 'start') appendAgentPhaseIndicator(data.phase);
+              break;
+            case 'plan':
+              if (data.plan) appendAgentPlan(data.plan);
+              break;
+            case 'verify':
+              appendAgentVerify(data);
+              break;
+            case 'done':
+              workingEl.remove();
+              if (assistantText) agentHistory.push({ role: 'assistant', content: assistantText });
+              break;
+          }
+          scrollAgentToBottom();
+        }
+      }
+    } catch (e) {
+      workingEl.remove();
+      appendAgentMessage('assistant', `⚠️ Erreur: ${e.message}`);
+    }
+  };
+
+  container.appendChild(div);
+}
+
+function appendAgentVerify(data) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = `agent-verify ${data.status === 'pass' ? 'pass' : 'issues'}`;
+
+  if (data.status === 'pass') {
+    div.innerHTML = '<span class="verify-icon">✓</span><span class="verify-text">Vérification réussie</span>';
+  } else {
+    let html = '<span class="verify-icon">⚠</span><span class="verify-text">Problèmes détectés:</span>';
+    if (data.issues && data.issues.length) {
+      html += '<ul class="verify-issues">';
+      for (const issue of data.issues) {
+        html += `<li>${escHtml(issue)}</li>`;
+      }
+      html += '</ul>';
+    }
+    div.innerHTML = html;
+  }
+  container.appendChild(div);
+}
+
+function appendAgentSystemNote(text) {
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-system-note';
+  div.textContent = text;
+  container.appendChild(div);
+  scrollAgentToBottom();
+}
+
+// ── Diff viewer ──────────────────────────────────────────────────────────
+function appendAgentDiff(filePath, diffText) {
+  const container = document.getElementById('agent-messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'agent-diff';
+
+  const header = document.createElement('div');
+  header.className = 'agent-diff-header';
+  header.innerHTML = `<span class="diff-file-name">${filePath}</span>
+    <button class="diff-open-btn" title="Ouvrir le fichier">ouvrir</button>`;
+  header.querySelector('.diff-open-btn').onclick = () => openFile(filePath);
+
+  const pre = document.createElement('pre');
+  pre.className = 'agent-diff-content';
+  // Colorize diff lines
+  const lines = diffText.split('\n');
+  pre.innerHTML = lines.map(line => {
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="diff-meta">${escHtml(line)}</span>`;
+    if (line.startsWith('@@')) return `<span class="diff-hunk">${escHtml(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="diff-add">${escHtml(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="diff-del">${escHtml(line)}</span>`;
+    return escHtml(line);
+  }).join('\n');
+
+  wrapper.appendChild(header);
+  wrapper.appendChild(pre);
+  container.appendChild(wrapper);
+  scrollAgentToBottom();
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Search results ───────────────────────────────────────────────────────
+function appendAgentSearchResults(matches) {
+  if (!matches.length) return;
+  const container = document.getElementById('agent-messages');
+  const div = document.createElement('div');
+  div.className = 'agent-search-results';
+  div.innerHTML = matches.slice(0, 20).map(m => {
+    const [loc, ...rest] = m.split(': ');
+    const [file, line] = loc.split(':');
+    return `<div class="search-hit" data-file="${file}" data-line="${line}">
+      <span class="search-file">${file}</span><span class="search-line">:${line}</span>
+      <span class="search-text">${escHtml(rest.join(': '))}</span>
+    </div>`;
+  }).join('');
+  // Click to open file
+  div.querySelectorAll('.search-hit').forEach(hit => {
+    hit.onclick = () => openFile(hit.dataset.file);
+  });
+  container.appendChild(div);
+  scrollAgentToBottom();
+}
+
+// ── Slash command autocomplete ───────────────────────────────────────────
+const SLASH_COMMANDS = [
+  { cmd: '/create', desc: 'Créer de nouveaux fichiers', placeholder: '/create une page de contact avec formulaire' },
+  { cmd: '/edit', desc: 'Modifier un fichier', placeholder: '/edit index.html ajouter un footer' },
+  { cmd: '/fix', desc: 'Corriger les bugs', placeholder: '/fix app.js' },
+  { cmd: '/explain', desc: 'Expliquer du code', placeholder: '/explain api/users.py' },
+  { cmd: '/schema', desc: 'Créer/modifier le schéma DB', placeholder: '/schema ajouter un model Product avec name, price' },
+  { cmd: '/api', desc: 'Créer une route API', placeholder: '/api GET /users retourne la liste des utilisateurs' },
+  { cmd: '/page', desc: 'Créer une page HTML', placeholder: '/page dashboard avec graphiques et stats' },
+  { cmd: '/refactor', desc: 'Améliorer la qualité du code', placeholder: '/refactor style.css' },
+  { cmd: '/search', desc: 'Chercher dans le projet', placeholder: '/search TODO' },
+];
+
+const agentInput = document.getElementById('agent-input');
+
+agentInput.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 80) + 'px';
+
+  // Slash command hint
+  const val = this.value;
+  let hint = document.getElementById('agent-slash-hint');
+  if (val.startsWith('/') && !val.includes(' ')) {
+    const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(val));
+    if (matches.length > 0 && val !== matches[0].cmd) {
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.id = 'agent-slash-hint';
+        document.getElementById('agent-input-area').appendChild(hint);
+      }
+      hint.innerHTML = matches.map(m =>
+        `<div class="slash-item" data-cmd="${m.cmd}"><strong>${m.cmd}</strong> <span>${m.desc}</span></div>`
+      ).join('');
+      hint.style.display = 'block';
+      hint.querySelectorAll('.slash-item').forEach(item => {
+        item.onclick = () => {
+          agentInput.value = item.dataset.cmd + ' ';
+          agentInput.focus();
+          hint.style.display = 'none';
+        };
+      });
+    } else if (hint) {
+      hint.style.display = 'none';
+    }
+  } else if (hint) {
+    hint.style.display = 'none';
+  }
+});
+
+// Hide hints on blur
+agentInput.addEventListener('blur', () => {
+  setTimeout(() => {
+    const hint = document.getElementById('agent-slash-hint');
+    if (hint) hint.style.display = 'none';
+  }, 200);
+});

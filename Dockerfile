@@ -19,6 +19,7 @@ COPY auth.py .
 COPY model_parser.py .
 COPY db_engine.py .
 COPY docker_runner.py .
+COPY agent.py .
 COPY api_runner_py.py .
 COPY api_runner_js.js .
 COPY Dockerfile.runner .
