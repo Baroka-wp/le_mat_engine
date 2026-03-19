@@ -1526,10 +1526,8 @@ function showLematVisual(tab) {
       addBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg> Ajouter un champ';
       addBtn.onclick = () => {
         const nf = { name: '', type: 'text', decorators: '', pk: false, unique: false, required: false, default_: null, ref: null };
-        model.fields.push(nf); markDirty(); render();
-        const rows = card.querySelectorAll('.lemat-field-row');
-        const lastRow = rows[rows.length - 1];
-        if (lastRow) lastRow.click();
+        model.fields.push(nf);
+        showFieldEditor(fieldList, null, nf, model, () => { markDirty(); render(); });
       };
       card.appendChild(addBtn);
       canvas.appendChild(card);
@@ -1704,59 +1702,68 @@ function showLematVisual(tab) {
   }
 
   function showFieldEditor(parentEl, rowEl, field, model, onDone) {
-    // Remove any existing editor
-    parentEl.querySelectorAll('.lemat-field-edit').forEach(el => el.remove());
-    // Show all rows
-    parentEl.querySelectorAll('.lemat-field-row').forEach(r => r.style.display = '');
+    const backdrop = document.getElementById('field-modal-backdrop');
+    const isNew = !field.name;
+    document.getElementById('field-modal-title').textContent = isNew ? 'Nouveau champ' : `Modifier « ${field.name} »`;
 
-    rowEl.style.display = 'none';
-    const editRow = document.createElement('div');
-    editRow.className = 'lemat-field-edit';
+    // Populate type select
+    const typeSelect = document.getElementById('fm-type');
+    typeSelect.innerHTML = LEMAT_TYPES.map(t => `<option ${t === field.type ? 'selected' : ''}>${t}</option>`).join('');
 
+    // Populate ref select
+    const refSelect = document.getElementById('fm-ref');
     const refOptions = schema.models
       .filter(m => m !== model)
       .flatMap(m => m.fields.filter(f => f.pk).map(f => `${m.name}.${f.name}`));
+    refSelect.innerHTML = '<option value="">— Aucune —</option>' +
+      refOptions.map(r => `<option ${r === field.ref ? 'selected' : ''}>${r}</option>`).join('');
 
-    editRow.innerHTML = `
-      <input type="text" placeholder="nom du champ" value="${field.name}" class="fe-name" />
-      <select class="fe-type">${LEMAT_TYPES.map(t => `<option ${t===field.type?'selected':''}>${t}</option>`).join('')}</select>
-      <label title="Clé primaire"><input type="checkbox" class="fe-pk" ${field.pk?'checked':''}/> PK</label>
-      <label title="Requis"><input type="checkbox" class="fe-req" ${field.required?'checked':''}/> Req</label>
-      <label title="Unique"><input type="checkbox" class="fe-uq" ${field.unique?'checked':''}/> Uniq</label>
-      ${refOptions.length ? `<select class="fe-ref"><option value="">— ref —</option>${refOptions.map(r => `<option ${r===field.ref?'selected':''}>${r}</option>`).join('')}</select>` : ''}
-      <button class="btn-field-ok" title="Valider">
-        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8l3 3 7-7"/></svg>
-      </button>
-      <button class="btn-field-cancel" title="Annuler">✕</button>`;
-    rowEl.after(editRow);
+    // Fill values
+    document.getElementById('fm-name').value = field.name || '';
+    document.getElementById('fm-pk').checked = !!field.pk;
+    document.getElementById('fm-req').checked = !!field.required;
+    document.getElementById('fm-uq').checked = !!field.unique;
 
-    const nameInput = editRow.querySelector('.fe-name');
-    nameInput.focus();
-    if (!field.name) nameInput.placeholder = 'nom du champ';
-    else nameInput.select();
+    backdrop.classList.remove('hidden');
+    setTimeout(() => document.getElementById('fm-name').focus(), 50);
+
+    const cleanup = () => {
+      backdrop.classList.add('hidden');
+      document.getElementById('btn-field-modal-ok').onclick = null;
+      document.getElementById('btn-field-modal-cancel').onclick = null;
+      document.getElementById('btn-field-modal-close').onclick = null;
+      backdrop.onclick = null;
+      document.removeEventListener('keydown', onKey);
+    };
 
     const save = () => {
-      const n = nameInput.value.trim();
+      const n = document.getElementById('fm-name').value.trim();
       if (!n) { cancel(); return; }
       field.name = n;
-      field.type = editRow.querySelector('.fe-type').value;
-      field.pk = editRow.querySelector('.fe-pk').checked;
-      field.required = editRow.querySelector('.fe-req').checked;
-      field.unique = editRow.querySelector('.fe-uq').checked;
-      const refSel = editRow.querySelector('.fe-ref');
-      field.ref = refSel ? refSel.value || null : field.ref;
+      field.type = typeSelect.value;
+      field.pk = document.getElementById('fm-pk').checked;
+      field.required = document.getElementById('fm-req').checked;
+      field.unique = document.getElementById('fm-uq').checked;
+      field.ref = refSelect.value || null;
+      cleanup();
       onDone();
     };
+
     const cancel = () => {
-      if (!field.name) {
+      if (isNew) {
         const idx = model.fields.indexOf(field);
         if (idx >= 0) model.fields.splice(idx, 1);
       }
+      cleanup();
       onDone();
     };
-    editRow.querySelector('.btn-field-ok').onclick = save;
-    editRow.querySelector('.btn-field-cancel').onclick = cancel;
-    nameInput.onkeydown = (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); };
+
+    const onKey = (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); };
+    document.addEventListener('keydown', onKey);
+    document.getElementById('btn-field-modal-ok').onclick = save;
+    document.getElementById('btn-field-modal-cancel').onclick = cancel;
+    document.getElementById('btn-field-modal-close').onclick = cancel;
+    backdrop.onclick = (e) => { if (e.target === backdrop) cancel(); };
   }
 
   // Toolbar actions
@@ -1999,11 +2006,7 @@ async function showDataTab(tab) {
     <button class="dv-btn" id="dv-refresh">${SVG_ICONS.refresh} Actualiser</button>`;
   view.appendChild(toolbar);
 
-  // ── Create form (hidden by default) ──
-  const formWrap = document.createElement('div');
-  formWrap.classList.add('dv-create-form');
-  formWrap.style.display = 'none';
-
+  // ── Record modal setup ──
   // For auto-increment PK, skip it
   const formCols = columns.filter(c => {
     if (c.pk && c.type.toUpperCase() === 'INTEGER') return false;
@@ -2035,51 +2038,6 @@ async function showDataTab(tab) {
     } catch(e) { /* ignore */ }
   });
   await Promise.all(refFetches);
-
-  let formHTML = '<div class="dv-form-header"><span>Nouvel enregistrement</span></div><div class="dv-form-fields">';
-  formCols.forEach(col => {
-    const required = col.notnull && !col.dflt_value ? ' *' : '';
-    const refInfo = refDataCache[col.name];
-
-    if (refInfo && refInfo.rows.length) {
-      // FK field → render a <select> with referenced rows
-      const ref = refInfo.ref;
-      const rows = refInfo.rows;
-      // Determine a display column (first non-PK text column, or second column)
-      const refTableInfo = schemaInfo.tables.find(t => t.name === ref.refTable);
-      const refCols = refTableInfo ? refTableInfo.columns.map(c => c.name) : (rows.length ? Object.keys(rows[0]) : []);
-      const pkCol = ref.refField;
-      const displayCol = refCols.find(c => c !== pkCol && c.toLowerCase() !== 'createdat') || refCols[1] || pkCol;
-
-      let options = `<option value="">— Sélectionner ${ref.refTable} —</option>`;
-      rows.forEach(r => {
-        const pkVal = r[pkCol];
-        const display = r[displayCol] || r[pkCol];
-        const extra = displayCol !== pkCol ? ` (${pkCol}: ${pkVal})` : '';
-        options += `<option value="${pkVal}">${display}${extra}</option>`;
-      });
-
-      formHTML += `
-        <div class="dv-form-field">
-          <label>${col.name}${required} <span class="dv-form-type">→ ${ref.refTable}</span></label>
-          <select name="${col.name}" class="dv-form-ref-select">${options}</select>
-        </div>`;
-    } else {
-      // Normal field → text input
-      const placeholder = col.dflt_value ? `défaut: ${col.dflt_value}` : col.type;
-      formHTML += `
-        <div class="dv-form-field">
-          <label>${col.name}${required} <span class="dv-form-type">${col.type}</span></label>
-          <input type="text" name="${col.name}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
-        </div>`;
-    }
-  });
-  formHTML += '</div><div class="dv-form-actions">';
-  formHTML += `<button class="dv-btn dv-btn-primary" id="dv-form-save">${SVG_ICONS.save} Enregistrer</button>`;
-  formHTML += `<button class="dv-btn" id="dv-form-cancel">${SVG_ICONS.close} Annuler</button>`;
-  formHTML += '</div>';
-  formWrap.innerHTML = formHTML;
-  view.appendChild(formWrap);
 
   // Grid
   const wrap = document.createElement('div');
@@ -2259,52 +2217,95 @@ async function showDataTab(tab) {
   container.appendChild(view);
 
   // ── Event handlers ──
-  const toggleForm = (show) => {
-    formWrap.style.display = show ? 'flex' : 'none';
-    if (show) {
-      formWrap.querySelectorAll('input').forEach(inp => inp.value = '');
-      formWrap.querySelectorAll('select').forEach(sel => sel.selectedIndex = 0);
-      const firstField = formWrap.querySelector('input, select');
-      if (firstField) setTimeout(() => firstField.focus(), 50);
-    }
+  const openRecordModal = () => {
+    const backdrop = document.getElementById('record-modal-backdrop');
+    const body = document.getElementById('record-modal-fields');
+    document.getElementById('record-modal-title').textContent = `Nouvel enregistrement — ${tab.tableName}`;
+
+    let fieldsHTML = '';
+    formCols.forEach(col => {
+      const required = col.notnull && !col.dflt_value ? ' *' : '';
+      const refInfo = refDataCache[col.name];
+
+      if (refInfo && refInfo.rows.length) {
+        const ref = refInfo.ref;
+        const rows = refInfo.rows;
+        const refTableInfo = schemaInfo.tables.find(t => t.name === ref.refTable);
+        const refCols = refTableInfo ? refTableInfo.columns.map(c => c.name) : (rows.length ? Object.keys(rows[0]) : []);
+        const pkCol = ref.refField;
+        const displayCol = refCols.find(c => c !== pkCol && c.toLowerCase() !== 'createdat') || refCols[1] || pkCol;
+
+        let options = `<option value="">— Sélectionner ${ref.refTable} —</option>`;
+        rows.forEach(r => {
+          const pkVal = r[pkCol];
+          const display = r[displayCol] || r[pkCol];
+          const extra = displayCol !== pkCol ? ` (${pkCol}: ${pkVal})` : '';
+          options += `<option value="${pkVal}">${display}${extra}</option>`;
+        });
+
+        fieldsHTML += `
+          <div class="rm-field">
+            <label>${col.name}${required} <span class="rm-ref-hint">→ ${ref.refTable}</span></label>
+            <select name="${col.name}">${options}</select>
+          </div>`;
+      } else {
+        const placeholder = col.dflt_value ? `défaut: ${col.dflt_value}` : col.type;
+        fieldsHTML += `
+          <div class="rm-field">
+            <label>${col.name}${required} <span class="rm-type">${col.type}</span></label>
+            <input type="text" name="${col.name}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
+          </div>`;
+      }
+    });
+    body.innerHTML = fieldsHTML;
+    backdrop.classList.remove('hidden');
+    const firstField = body.querySelector('input, select');
+    if (firstField) setTimeout(() => firstField.focus(), 50);
+
+    const cleanup = () => {
+      backdrop.classList.add('hidden');
+      document.removeEventListener('keydown', onKey);
+    };
+
+    const save = async () => {
+      const inputs = body.querySelectorAll('input, select');
+      const record = {};
+      let hasValue = false;
+      inputs.forEach(inp => {
+        const val = inp.value.trim();
+        if (val !== '') {
+          const num = Number(val);
+          record[inp.name] = (val !== '' && !isNaN(num) && String(num) === val) ? num : val;
+          hasValue = true;
+        }
+      });
+      if (!hasValue) { toast('Remplis au moins un champ', 'error'); return; }
+      try {
+        await api('POST', `/api/projects/${currentProject}/data/${tab.tableName}`, record);
+        toast('Enregistrement créé', 'success');
+        cleanup();
+        await showDataTab(tab);
+      } catch(err) { toast(err.message || 'Erreur lors de la création', 'error'); }
+    };
+
+    const onKey = (e) => {
+      if (e.key === 'Enter') save();
+      if (e.key === 'Escape') cleanup();
+    };
+    document.addEventListener('keydown', onKey);
+    document.getElementById('btn-record-modal-ok').onclick = save;
+    document.getElementById('btn-record-modal-cancel').onclick = cleanup;
+    document.getElementById('btn-record-modal-close').onclick = cleanup;
+    backdrop.onclick = (e) => { if (e.target === backdrop) cleanup(); };
   };
 
-  toolbar.querySelector('#dv-add').onclick = () => toggleForm(true);
+  toolbar.querySelector('#dv-add').onclick = openRecordModal;
   toolbar.querySelector('#dv-refresh').onclick = () => showDataTab(tab);
-  formWrap.querySelector('#dv-form-cancel').onclick = () => toggleForm(false);
 
   // Empty state "Ajouter" button
   const emptyAddBtn = wrap.querySelector('.dv-btn-empty-add');
-  if (emptyAddBtn) emptyAddBtn.onclick = () => toggleForm(true);
+  if (emptyAddBtn) emptyAddBtn.onclick = openRecordModal;
 
-  // Save new record
-  formWrap.querySelector('#dv-form-save').onclick = async () => {
-    const inputs = formWrap.querySelectorAll('.dv-form-fields input, .dv-form-fields select');
-    const record = {};
-    let hasValue = false;
-    inputs.forEach(inp => {
-      const val = inp.value.trim();
-      if (val !== '') {
-        // Try to parse numbers
-        const num = Number(val);
-        record[inp.name] = (val !== '' && !isNaN(num) && String(num) === val) ? num : val;
-        hasValue = true;
-      }
-    });
-    if (!hasValue) { toast('Remplis au moins un champ', 'error'); return; }
-    try {
-      await api('POST', `/api/projects/${currentProject}/data/${tab.tableName}`, record);
-      toast('Enregistrement créé', 'success');
-      toggleForm(false);
-      await showDataTab(tab); // Refresh the view
-    } catch(err) { toast(err.message || 'Erreur lors de la création', 'error'); }
-  };
-
-  // Enter key in form → save
-  formWrap.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); formWrap.querySelector('#dv-form-save').click(); }
-    if (e.key === 'Escape') { toggleForm(false); }
-  });
 }
 
 // ── Run ───────────────────────────────────────────────────────────────

@@ -634,6 +634,56 @@
     </div>
   </div>
 
+  <!-- ── Add Field Modal (visual editor) ── -->
+  <div id="field-modal-backdrop" class="hidden">
+    <div id="field-modal">
+      <div class="field-modal-header">
+        <span id="field-modal-title">Nouveau champ</span>
+        <button id="btn-field-modal-close" class="close-btn" title="Fermer">✕</button>
+      </div>
+      <div class="field-modal-body">
+        <div class="field-modal-row">
+          <label>Nom</label>
+          <input id="fm-name" type="text" placeholder="ex: email, age, role…" autocomplete="off" />
+        </div>
+        <div class="field-modal-row">
+          <label>Type</label>
+          <select id="fm-type"></select>
+        </div>
+        <div class="field-modal-row">
+          <label>Référence</label>
+          <select id="fm-ref"><option value="">— Aucune —</option></select>
+        </div>
+        <div class="field-modal-checks">
+          <label><input id="fm-pk" type="checkbox" /> Clé primaire</label>
+          <label><input id="fm-req" type="checkbox" /> Requis</label>
+          <label><input id="fm-uq" type="checkbox" /> Unique</label>
+        </div>
+      </div>
+      <div class="field-modal-actions">
+        <button class="btn-ghost" id="btn-field-modal-cancel">Annuler</button>
+        <button class="btn-accent" id="btn-field-modal-ok">Valider</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Add Record Modal (data view) ── -->
+  <div id="record-modal-backdrop" class="hidden">
+    <div id="record-modal">
+      <div class="record-modal-header">
+        <span id="record-modal-title">Nouvel enregistrement</span>
+        <button id="btn-record-modal-close" class="close-btn" title="Fermer">✕</button>
+      </div>
+      <div class="record-modal-body" id="record-modal-fields">
+        <!-- Dynamic fields injected here -->
+      </div>
+      <div class="record-modal-actions">
+        <button class="btn-ghost" id="btn-record-modal-cancel">Annuler</button>
+        <button class="btn-accent" id="btn-record-modal-ok">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast"></div>
 
   <script>
