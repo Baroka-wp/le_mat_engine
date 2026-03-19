@@ -338,7 +338,8 @@ function openProject(name) {
   document.getElementById('current-project-name').textContent = name;
   document.getElementById('filetree-section').style.display = 'flex';
   document.getElementById('email-section').style.display = 'flex';
-  Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection()]);
+  document.getElementById('apikeys-section').style.display = 'flex';
+  Promise.all([loadTree(), loadDbSection(), loadEmailStatus(), loadCronSection(), loadApiKeys()]);
   document.querySelectorAll('#project-list li').forEach(li =>
     li.classList.toggle('active', li.dataset.name === name));
 }
@@ -430,6 +431,7 @@ async function deleteProject(name) {
     renderTabs(); showWelcome();
     document.getElementById('filetree-section').style.display = 'none';
     document.getElementById('email-section').style.display = 'none';
+    document.getElementById('apikeys-section').style.display = 'none';
     showDashboard();
   } else {
     loadDashboard();
@@ -2795,5 +2797,69 @@ document.getElementById('smtp-tls').onchange = (e) => {
 };
 document.getElementById('smtp-ssl').onchange = (e) => {
   if (e.target.checked) document.getElementById('smtp-tls').checked = false;
+};
+
+// ── API Keys ──────────────────────────────────────────────────────────────────
+
+async function loadApiKeys() {
+  if (!currentProject) return;
+  const listEl = document.getElementById('apikeys-list');
+  try {
+    const keys = await api('GET', `/api/projects/${currentProject}/api-keys`);
+    if (!keys.length) {
+      listEl.innerHTML = '<div class="apikeys-empty">Aucune clé API. Crée-en une pour sécuriser tes routes.</div>';
+      return;
+    }
+    listEl.innerHTML = keys.map(k => `
+      <div class="apikey-item" data-id="${k.id}">
+        <div class="apikey-info">
+          <span class="apikey-name">${k.name}</span>
+          <code class="apikey-value">${k.key}</code>
+        </div>
+        <button class="apikey-delete" title="Supprimer">
+          ${SVG_ICONS.trash}
+        </button>
+      </div>`).join('');
+
+    listEl.querySelectorAll('.apikey-delete').forEach(btn => {
+      btn.onclick = async () => {
+        const item = btn.closest('.apikey-item');
+        const id = item.dataset.id;
+        try {
+          await api('DELETE', `/api/projects/${currentProject}/api-keys/${id}`);
+          toast('Clé supprimée', 'success');
+          loadApiKeys();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+    });
+  } catch {
+    listEl.innerHTML = '';
+  }
+}
+
+document.getElementById('btn-new-apikey').onclick = async () => {
+  prompt_('Nom de la clé API (ex: default, mobile, webhook)', 'default', async (name) => {
+    if (!name) return;
+    try {
+      const result = await api('POST', `/api/projects/${currentProject}/api-keys`, { name });
+      // Show the full key in a copyable way
+      const listEl = document.getElementById('apikeys-list');
+      const notice = document.createElement('div');
+      notice.className = 'apikey-created-notice';
+      notice.innerHTML = `
+        <div class="apikey-notice-title">Clé créée — copie-la maintenant !</div>
+        <code class="apikey-full-key" title="Cliquer pour copier">${result.key}</code>
+        <div class="apikey-notice-warn">Cette clé ne sera plus affichée en entier.</div>`;
+      notice.querySelector('.apikey-full-key').onclick = () => {
+        navigator.clipboard.writeText(result.key);
+        toast('Clé copiée !', 'success');
+      };
+      listEl.prepend(notice);
+      setTimeout(() => {
+        notice.remove();
+        loadApiKeys();
+      }, 15000);
+    } catch (e) { toast(e.message, 'error'); }
+  });
 };
 

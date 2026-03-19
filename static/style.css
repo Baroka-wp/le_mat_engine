@@ -809,6 +809,40 @@ button.primary:hover { opacity: .85; }
 .email-status-ok   { color: var(--accent2); }
 .email-status-hint { color: var(--muted); font-style: italic; }
 
+/* ── API Keys ───────────────────────────────────────────────────────── */
+#apikeys-list { padding: 4px 8px 8px; }
+.apikeys-empty { font-size: 11px; color: var(--muted); font-style: italic; padding: 4px 4px; }
+.apikey-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px; border-radius: var(--radius);
+  border: 1px solid var(--border); margin-bottom: 4px;
+  background: var(--bg);
+}
+.apikey-info { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.apikey-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.apikey-value { font-size: 10px; color: var(--muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; }
+.apikey-delete {
+  background: none; border: none; cursor: pointer; color: var(--muted); padding: 2px;
+  opacity: .5; transition: opacity .15s;
+}
+.apikey-delete:hover { opacity: 1; color: #dc2626; }
+.apikey-delete svg { width: 12px; height: 12px; }
+.apikey-created-notice {
+  background: var(--bg); border: 2px solid var(--accent);
+  border-radius: var(--radius); padding: 10px; margin-bottom: 8px;
+  animation: modalFadeIn .15s ease-out;
+}
+.apikey-notice-title { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 6px; }
+.apikey-full-key {
+  display: block; padding: 8px 10px; background: var(--sidebar);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; font-family: monospace; color: var(--text);
+  word-break: break-all; cursor: pointer; user-select: all;
+  transition: background .15s;
+}
+.apikey-full-key:hover { background: var(--border); }
+.apikey-notice-warn { font-size: 10px; color: var(--muted); margin-top: 4px; font-style: italic; }
+
 /* ── SMTP Modal ──────────────────────────────────────────────────────── */
 #smtp-backdrop {
   position: fixed; inset: 0;
